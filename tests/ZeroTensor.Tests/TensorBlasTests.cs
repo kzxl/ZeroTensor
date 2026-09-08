@@ -1,0 +1,95 @@
+using System;
+using Xunit;
+using ZeroTensor.Core;
+
+namespace ZeroTensor.Tests
+{
+    public class TensorBlasTests
+    {
+        [Fact]
+        public void DotProduct_And_Norm_AreAccurate()
+        {
+            var u = Tensor.FromArray(new float[] { 1, 2, 3 });
+            var v = Tensor.FromArray(new float[] { 4, 5, 6 });
+
+            // 1*4 + 2*5 + 3*6 = 4 + 10 + 18 = 32
+            float dot = TensorBlas.Dot(u, v);
+            Assert.Equal(32f, dot);
+
+            // norm(3, 4) = 5
+            var vec2 = Tensor.FromArray(new float[] { 3, 4 });
+            float norm = TensorBlas.Norm(vec2);
+            Assert.Equal(5f, norm);
+        }
+
+        [Fact]
+        public void MatMul_2D_MatchesAnalyticalResult()
+        {
+            // A (2x3):
+            // [1, 2, 3]
+            // [4, 5, 6]
+            var A = Tensor.FromArray(new float[]
+            {
+                1, 2, 3,
+                4, 5, 6
+            }, 2, 3);
+
+            // B (3x2):
+            // [7,  8]
+            // [9,  1]
+            // [2,  3]
+            var B = Tensor.FromArray(new float[]
+            {
+                7, 8,
+                9, 1,
+                2, 3
+            }, 3, 2);
+
+            // C = A @ B (2x2):
+            // row 0: [1*7 + 2*9 + 3*2,  1*8 + 2*1 + 3*3] = [7 + 18 + 6,  8 + 2 + 9]  = [31, 19]
+            // row 1: [4*7 + 5*9 + 6*2,  4*8 + 5*1 + 6*3] = [28 + 45 + 12, 32 + 5 + 18] = [85, 55]
+            var C = TensorBlas.MatMul(A, B);
+
+            Assert.Equal(new TensorShape(2, 2), C.Shape);
+            Assert.Equal(31f, C[0, 0]);
+            Assert.Equal(19f, C[0, 1]);
+            Assert.Equal(85f, C[1, 0]);
+            Assert.Equal(55f, C[1, 1]);
+        }
+
+        [Fact]
+        public void MatMul_WithIdentity_ReturnsOriginal()
+        {
+            var A = Tensor.FromArray(new float[]
+            {
+                2, 5, 7,
+                1, 3, 4,
+                8, 9, 6
+            }, 3, 3);
+
+            var I = Tensor.Eye(3);
+            var result = TensorBlas.MatMul(A, I);
+
+            Assert.Equal(A.ToArray(), result.ToArray());
+        }
+
+        [Fact]
+        public void MatMul_MatrixVector_ProducesVector()
+        {
+            var A = Tensor.FromArray(new float[]
+            {
+                1, 2,
+                3, 4
+            }, 2, 2);
+
+            var x = Tensor.FromArray(new float[] { 5, 6 }); // length 2
+
+            // [1*5 + 2*6, 3*5 + 4*6] = [17, 39]
+            var y = TensorBlas.MatMul(A, x);
+
+            Assert.Equal(new TensorShape(2), y.Shape);
+            Assert.Equal(17f, y[0]);
+            Assert.Equal(39f, y[1]);
+        }
+    }
+}
