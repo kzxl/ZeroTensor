@@ -1,0 +1,8 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/ZeroTensor.Core/ZeroTensor.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/ZeroTensor.Tests/ZeroTensor.Tests.csproj" />
+  </Folder>
+</Solution>
