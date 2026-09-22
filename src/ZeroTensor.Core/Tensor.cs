@@ -194,5 +194,37 @@ namespace ZeroTensor.Core
 
             return tensor;
         }
+
+        /// <summary>
+        /// Creates a Tensor by copying elements from an unmanaged NativeMemoryBlock.
+        /// </summary>
+        public static unsafe Tensor<T> FromNativeBlock<T>(ZeroPrimitives.Memory.NativeMemoryBlock block, params int[] shape) where T : unmanaged, IEquatable<T>
+        {
+            if (block == null) throw new ArgumentNullException(nameof(block));
+            var tensorShape = new TensorShape(shape);
+            int requiredBytes = tensorShape.TotalElements * sizeof(T);
+            if (block.Capacity < requiredBytes)
+                throw new ArgumentException($"Native block capacity ({block.Capacity} bytes) is smaller than required tensor size ({requiredBytes} bytes).", nameof(block));
+
+            var tensor = new Tensor<T>(tensorShape);
+            var srcSpan = new ReadOnlySpan<T>(block.Pointer, tensorShape.TotalElements);
+            srcSpan.CopyTo(tensor.AsSpan());
+            return tensor;
+        }
+
+        /// <summary>
+        /// Copies the tensor elements into an unmanaged NativeMemoryBlock allocated from off-heap native memory.
+        /// </summary>
+        public static unsafe ZeroPrimitives.Memory.NativeMemoryBlock ToNativeBlock<T>(this Tensor<T> tensor) where T : unmanaged, IEquatable<T>
+        {
+            if (tensor == null) throw new ArgumentNullException(nameof(tensor));
+            var contig = tensor.IsContiguous ? tensor : tensor.ToContiguous();
+            int byteCount = contig.Length * sizeof(T);
+            var block = ZeroPrimitives.Memory.NativeMemoryBlock.Allocate(byteCount);
+            var destSpan = new Span<T>(block.Pointer, contig.Length);
+            contig.AsSpan().CopyTo(destSpan);
+            block.Length = byteCount;
+            return block;
+        }
     }
 }

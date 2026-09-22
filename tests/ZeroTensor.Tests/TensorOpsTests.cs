@@ -137,5 +137,31 @@ namespace ZeroTensor.Tests
                 Assert.True(Math.Abs(sum - 1.0f) < 1e-5f, $"Row {r} sum is {sum}");
             }
         }
+
+        [Fact]
+        public void NativeMemory_Roundtrip_WorksCorrectly()
+        {
+            var orig = Tensor.FromArray(new float[] { 10.5f, 20.5f, 30.5f, 40.5f, 50.5f, 60.5f }, 2, 3);
+            using var nativeBlock = orig.ToNativeBlock();
+
+            Assert.NotNull(nativeBlock);
+            Assert.True(nativeBlock.Length >= 6 * sizeof(float));
+
+            var restored = Tensor.FromNativeBlock<float>(nativeBlock, 2, 3);
+            Assert.Equal(orig.Shape, restored.Shape);
+            Assert.Equal(orig.ToArray(), restored.ToArray());
+        }
+
+        [Fact]
+        public void AsSpan_ContiguousTensor_AllowsDirectSpanMutation()
+        {
+            var tensor = Tensor.Zeros<float>(3, 3);
+            var span = tensor.AsSpan();
+            span[0] = 99.0f;
+            span[4] = 42.0f;
+
+            Assert.Equal(99.0f, tensor[0, 0]);
+            Assert.Equal(42.0f, tensor[1, 1]);
+        }
     }
 }
