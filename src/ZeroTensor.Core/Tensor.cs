@@ -5,8 +5,24 @@ namespace ZeroTensor.Core
     /// <summary>
     /// Static factory methods for creating and initializing tensors.
     /// </summary>
-    public static class Tensor
+    public static partial class Tensor
     {
+        /// <summary>
+        /// Creates a tensor initialized with data for the specified shape.
+        /// </summary>
+        public static Tensor<T> Create<T>(int[] shape, T[] data) where T : unmanaged, IEquatable<T>
+        {
+            return FromArray(data, shape);
+        }
+
+        /// <summary>
+        /// Creates a tensor with the specified shape initialized to zeros.
+        /// </summary>
+        public static Tensor<T> Create<T>(params int[] shape) where T : unmanaged, IEquatable<T>
+        {
+            return Zeros<T>(shape);
+        }
+
         /// <summary>
         /// Creates a tensor filled with zeros.
         /// </summary>
@@ -167,6 +183,12 @@ namespace ZeroTensor.Core
 
             return tensor;
         }
+
+        /// <summary>
+        /// Creates a 2D matrix filled with uniform random values (convenience alias).
+        /// </summary>
+        public static Tensor<float> RandomUniform(int rows, int cols, float min = 0f, float max = 1f, int seed = 42) =>
+            Uniform(min, max, seed, rows, cols);
 
         /// <summary>
         /// Creates a tensor filled with pseudo-random values drawn from a standard normal distribution N(mean, stdDev^2) via Box-Muller transform.

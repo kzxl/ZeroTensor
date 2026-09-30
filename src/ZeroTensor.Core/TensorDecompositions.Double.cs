@@ -2,24 +2,16 @@ using System;
 
 namespace ZeroTensor.Core
 {
-    /// <summary>
-    /// Matrix factorizations and linear system solvers: LU, Cholesky, QR, SVD, Matrix Inversion, and Determinants.
-    /// </summary>
     public static partial class TensorDecompositions
     {
-        private const float Epsilon = 1e-12f;
+        private const double EpsilonDouble = 1e-15;
 
-        #region LU Decomposition & Solver
+        #region Double LU Decomposition & Solver
 
         /// <summary>
-        /// Computes the LU decomposition with partial row pivoting: P * A = L * U.
+        /// Computes the LU decomposition with partial row pivoting for double precision: P * A = L * U.
         /// </summary>
-        /// <param name="A">Square input matrix (N x N).</param>
-        /// <param name="L">Output unit lower triangular matrix (N x N).</param>
-        /// <param name="U">Output upper triangular matrix (N x N).</param>
-        /// <param name="P">Output permutation vector recording row exchanges.</param>
-        /// <returns>Number of row swaps performed (used for determinant sign).</returns>
-        public static int LU(Tensor<float> A, out Tensor<float> L, out Tensor<float> U, out int[] P)
+        public static int LU(Tensor<double> A, out Tensor<double> L, out Tensor<double> U, out int[] P)
         {
             if (A.Rank != 2 || A.Shape[0] != A.Shape[1])
             {
@@ -27,7 +19,8 @@ namespace ZeroTensor.Core
             }
 
             int n = A.Shape[0];
-            L = Tensor.Eye(n);
+            L = Tensor.Zeros<double>(n, n);
+            for (int i = 0; i < n; i++) L[i, i] = 1.0;
             U = A.Clone();
             P = new int[n];
             for (int i = 0; i < n; i++) P[i] = i;
@@ -36,13 +29,12 @@ namespace ZeroTensor.Core
 
             for (int k = 0; k < n; k++)
             {
-                // Find pivot row
-                float maxVal = Math.Abs(U[k, k]);
+                double maxVal = Math.Abs(U[k, k]);
                 int pivotRow = k;
 
                 for (int i = k + 1; i < n; i++)
                 {
-                    float val = Math.Abs(U[i, k]);
+                    double val = Math.Abs(U[i, k]);
                     if (val > maxVal)
                     {
                         maxVal = val;
@@ -52,23 +44,20 @@ namespace ZeroTensor.Core
 
                 if (pivotRow != k)
                 {
-                    // Swap rows in U
                     for (int j = 0; j < n; j++)
                     {
-                        float tmp = U[k, j];
+                        double tmp = U[k, j];
                         U[k, j] = U[pivotRow, j];
                         U[pivotRow, j] = tmp;
                     }
 
-                    // Swap rows in L (columns 0 to k-1)
                     for (int j = 0; j < k; j++)
                     {
-                        float tmp = L[k, j];
+                        double tmp = L[k, j];
                         L[k, j] = L[pivotRow, j];
                         L[pivotRow, j] = tmp;
                     }
 
-                    // Swap permutation indices
                     int pTmp = P[k];
                     P[k] = P[pivotRow];
                     P[pivotRow] = pTmp;
@@ -76,17 +65,17 @@ namespace ZeroTensor.Core
                     swaps++;
                 }
 
-                float pivotVal = U[k, k];
-                if (Math.Abs(pivotVal) < Epsilon)
+                double pivotVal = U[k, k];
+                if (Math.Abs(pivotVal) < EpsilonDouble)
                 {
-                    continue; // Singular or nearly singular matrix
+                    continue;
                 }
 
                 for (int i = k + 1; i < n; i++)
                 {
-                    float factor = U[i, k] / pivotVal;
+                    double factor = U[i, k] / pivotVal;
                     L[i, k] = factor;
-                    U[i, k] = 0f;
+                    U[i, k] = 0.0;
 
                     for (int j = k + 1; j < n; j++)
                     {
@@ -99,10 +88,9 @@ namespace ZeroTensor.Core
         }
 
         /// <summary>
-        /// Solves the linear system A * X = B for square matrix A using LU decomposition.
-        /// B can be a 1D vector or a 2D matrix of column vectors.
+        /// Solves the linear system A * X = B for square matrix A using LU decomposition (double precision).
         /// </summary>
-        public static Tensor<float> Solve(Tensor<float> A, Tensor<float> B)
+        public static Tensor<double> Solve(Tensor<double> A, Tensor<double> B)
         {
             if (A.Rank != 2 || A.Shape[0] != A.Shape[1])
             {
@@ -121,10 +109,9 @@ namespace ZeroTensor.Core
             }
 
             int numRhs = B2D.Shape[1];
-            var X = new Tensor<float>(n, numRhs);
+            var X = new Tensor<double>(n, numRhs);
 
-            // Permute B rows according to P
-            var Pb = new Tensor<float>(n, numRhs);
+            var Pb = new Tensor<double>(n, numRhs);
             for (int i = 0; i < n; i++)
             {
                 for (int c = 0; c < numRhs; c++)
@@ -133,33 +120,31 @@ namespace ZeroTensor.Core
                 }
             }
 
-            // Forward substitution: L * Y = P * B
-            var Y = new Tensor<float>(n, numRhs);
+            var Y = new Tensor<double>(n, numRhs);
             for (int c = 0; c < numRhs; c++)
             {
                 for (int i = 0; i < n; i++)
                 {
-                    float sum = Pb[i, c];
+                    double sum = Pb[i, c];
                     for (int j = 0; j < i; j++)
                     {
                         sum -= L[i, j] * Y[j, c];
                     }
-                    Y[i, c] = sum; // L[i, i] is 1
+                    Y[i, c] = sum;
                 }
             }
 
-            // Backward substitution: U * X = Y
             for (int c = 0; c < numRhs; c++)
             {
                 for (int i = n - 1; i >= 0; i--)
                 {
-                    float sum = Y[i, c];
+                    double sum = Y[i, c];
                     for (int j = i + 1; j < n; j++)
                     {
                         sum -= U[i, j] * X[j, c];
                     }
 
-                    if (Math.Abs(U[i, i]) < Epsilon)
+                    if (Math.Abs(U[i, i]) < EpsilonDouble)
                     {
                         throw new InvalidOperationException($"Matrix is singular at diagonal entry {i}. Cannot solve.");
                     }
@@ -172,9 +157,9 @@ namespace ZeroTensor.Core
         }
 
         /// <summary>
-        /// Computes the inverse of a square matrix A: A^(-1).
+        /// Computes the inverse of a square matrix A (double precision).
         /// </summary>
-        public static Tensor<float> Invert(Tensor<float> A)
+        public static Tensor<double> Invert(Tensor<double> A)
         {
             if (A.Rank != 2 || A.Shape[0] != A.Shape[1])
             {
@@ -182,14 +167,15 @@ namespace ZeroTensor.Core
             }
 
             int n = A.Shape[0];
-            var identity = Tensor.Eye(n);
+            var identity = Tensor.Zeros<double>(n, n);
+            for (int i = 0; i < n; i++) identity[i, i] = 1.0;
             return Solve(A, identity);
         }
 
         /// <summary>
-        /// Computes the determinant of a square matrix A via LU decomposition: det(A) = (-1)^swaps * prod(U[i, i]).
+        /// Computes the determinant of a square matrix A (double precision).
         /// </summary>
-        public static float Determinant(Tensor<float> A)
+        public static double Determinant(Tensor<double> A)
         {
             if (A.Rank != 2 || A.Shape[0] != A.Shape[1])
             {
@@ -199,7 +185,7 @@ namespace ZeroTensor.Core
             int n = A.Shape[0];
             int swaps = LU(A, out _, out var U, out _);
 
-            float det = (swaps % 2 == 1) ? -1.0f : 1.0f;
+            double det = (swaps % 2 == 1) ? -1.0 : 1.0;
             for (int i = 0; i < n; i++)
             {
                 det *= U[i, i];
@@ -210,14 +196,12 @@ namespace ZeroTensor.Core
 
         #endregion
 
-        #region Cholesky Decomposition
+        #region Double Cholesky & QR
 
         /// <summary>
-        /// Computes the Cholesky decomposition of a symmetric positive-definite matrix A: A = L * L^T.
+        /// Computes the Cholesky decomposition of a symmetric positive-definite matrix A (double precision): A = L * L^T.
         /// </summary>
-        /// <param name="A">Symmetric positive-definite matrix (N x N).</param>
-        /// <returns>Lower triangular matrix L.</returns>
-        public static Tensor<float> Cholesky(Tensor<float> A)
+        public static Tensor<double> Cholesky(Tensor<double> A)
         {
             if (A.Rank != 2 || A.Shape[0] != A.Shape[1])
             {
@@ -225,13 +209,13 @@ namespace ZeroTensor.Core
             }
 
             int n = A.Shape[0];
-            var L = new Tensor<float>(n, n);
+            var L = new Tensor<double>(n, n);
 
             for (int i = 0; i < n; i++)
             {
                 for (int j = 0; j <= i; j++)
                 {
-                    float sum = 0f;
+                    double sum = 0.0;
 
                     if (j == i)
                     {
@@ -240,13 +224,13 @@ namespace ZeroTensor.Core
                             sum += L[j, k] * L[j, k];
                         }
 
-                        float val = A[j, j] - sum;
-                        if (val <= 0f)
+                        double val = A[j, j] - sum;
+                        if (val <= 0.0)
                         {
                             throw new InvalidOperationException($"Matrix is not positive-definite at index ({j}, {j}) with value {val}.");
                         }
 
-                        L[j, j] = (float)Math.Sqrt(val);
+                        L[j, j] = Math.Sqrt(val);
                     }
                     else
                     {
@@ -263,14 +247,10 @@ namespace ZeroTensor.Core
             return L;
         }
 
-        #endregion
-
-        #region QR Decomposition
-
         /// <summary>
-        /// Computes the QR decomposition of matrix A (M x N, M >= N) using Householder reflections: A = Q * R.
+        /// Computes the QR decomposition of matrix A using Householder reflections (double precision): A = Q * R.
         /// </summary>
-        public static void QR(Tensor<float> A, out Tensor<float> Q, out Tensor<float> R)
+        public static void QR(Tensor<double> A, out Tensor<double> Q, out Tensor<double> R)
         {
             if (A.Rank != 2) throw new ArgumentException("QR decomposition requires a 2D matrix.", nameof(A));
             int m = A.Shape[0];
@@ -279,26 +259,26 @@ namespace ZeroTensor.Core
             if (m < n) throw new ArgumentException($"Matrix A must have rows >= cols: ({m}x{n}).", nameof(A));
 
             R = A.Clone();
-            Q = Tensor.Eye(m);
+            Q = Tensor.Zeros<double>(m, m);
+            for (int i = 0; i < m; i++) Q[i, i] = 1.0;
 
             for (int k = 0; k < n; k++)
             {
-                // Form Householder vector for column k from row k to m-1
-                float normSq = 0f;
+                double normSq = 0.0;
                 for (int i = k; i < m; i++)
                 {
                     normSq += R[i, k] * R[i, k];
                 }
 
-                float norm = (float)Math.Sqrt(normSq);
-                if (norm < Epsilon) continue;
+                double norm = Math.Sqrt(normSq);
+                if (norm < EpsilonDouble) continue;
 
-                float alpha = R[k, k] < 0f ? norm : -norm;
-                float u0 = R[k, k] - alpha;
+                double alpha = R[k, k] < 0.0 ? norm : -norm;
+                double u0 = R[k, k] - alpha;
 
-                var v = new float[m - k];
-                v[0] = 1.0f;
-                float vNormSq = 1.0f;
+                var v = new double[m - k];
+                v[0] = 1.0;
+                double vNormSq = 1.0;
 
                 for (int i = 1; i < m - k; i++)
                 {
@@ -306,34 +286,32 @@ namespace ZeroTensor.Core
                     vNormSq += v[i] * v[i];
                 }
 
-                float tau = 2.0f / vNormSq;
+                double tau = 2.0 / vNormSq;
 
-                // Apply Householder reflection to R: R = (I - tau * v * v^T) * R
                 for (int j = k; j < n; j++)
                 {
-                    float dot = 0f;
+                    double dot = 0.0;
                     for (int i = 0; i < m - k; i++)
                     {
                         dot += v[i] * R[k + i, j];
                     }
 
-                    float scale = tau * dot;
+                    double scale = tau * dot;
                     for (int i = 0; i < m - k; i++)
                     {
                         R[k + i, j] -= scale * v[i];
                     }
                 }
 
-                // Accumulate into Q: Q = Q * (I - tau * v * v^T)
                 for (int i = 0; i < m; i++)
                 {
-                    float dot = 0f;
+                    double dot = 0.0;
                     for (int j = 0; j < m - k; j++)
                     {
                         dot += Q[i, k + j] * v[j];
                     }
 
-                    float scale = tau * dot;
+                    double scale = tau * dot;
                     for (int j = 0; j < m - k; j++)
                     {
                         Q[i, k + j] -= scale * v[j];
@@ -341,44 +319,36 @@ namespace ZeroTensor.Core
                 }
             }
 
-            // Zero out lower triangle of R explicitly
             for (int i = 0; i < m; i++)
             {
                 for (int j = 0; j < Math.Min(i, n); j++)
                 {
-                    R[i, j] = 0f;
+                    R[i, j] = 0.0;
                 }
             }
         }
 
         #endregion
 
-        #region Singular Value Decomposition (SVD)
+        #region Double SVD, Eigh & Pseudoinverse
 
         /// <summary>
-        /// Computes the Singular Value Decomposition of matrix A (M x N, M >= N): A = U * S * V^T.
-        /// Implemented via the numerically stable One-Sided Jacobi orthogonalization.
+        /// Computes SVD of matrix A (double precision): A = U * S * V^T.
         /// </summary>
-        /// <param name="A">Input matrix (M x N).</param>
-        /// <param name="U">Left singular vectors (M x N, orthogonal columns).</param>
-        /// <param name="S">Singular values vector (N elements sorted descending).</param>
-        /// <param name="Vt">Right singular vectors transposed (N x N, orthogonal rows).</param>
-        /// <param name="maxSweeps">Maximum number of Jacobi sweeps.</param>
-        /// <param name="tolerance">Convergence threshold.</param>
         public static void SVD(
-            Tensor<float> A,
-            out Tensor<float> U,
-            out Tensor<float> S,
-            out Tensor<float> Vt,
+            Tensor<double> A,
+            out Tensor<double> U,
+            out Tensor<double> S,
+            out Tensor<double> Vt,
             int maxSweeps = 30,
-            float tolerance = 1e-6f)
+            double tolerance = 1e-12)
         {
             if (A.Rank != 2) throw new ArgumentException("SVD requires a 2D matrix.", nameof(A));
             int m = A.Shape[0];
             int n = A.Shape[1];
 
             bool transposed = false;
-            Tensor<float> workA;
+            Tensor<double> workA;
 
             if (m < n)
             {
@@ -393,53 +363,50 @@ namespace ZeroTensor.Core
                 workA = A.Clone();
             }
 
-            var V = Tensor.Eye(n);
+            var V = Tensor.Zeros<double>(n, n);
+            for (int i = 0; i < n; i++) V[i, i] = 1.0;
 
             for (int sweep = 0; sweep < maxSweeps; sweep++)
             {
-                float maxCorrelation = 0f;
+                double maxCorrelation = 0.0;
 
                 for (int j = 0; j < n - 1; j++)
                 {
                     for (int k = j + 1; k < n; k++)
                     {
-                        // Compute dot products: a_j . a_j, a_k . a_k, a_j . a_k
-                        float alpha = 0f, beta = 0f, gamma = 0f;
+                        double alpha = 0.0, beta = 0.0, gamma = 0.0;
 
                         for (int i = 0; i < m; i++)
                         {
-                            float aj = workA[i, j];
-                            float ak = workA[i, k];
+                            double aj = workA[i, j];
+                            double ak = workA[i, k];
                             alpha += aj * aj;
                             beta += ak * ak;
                             gamma += aj * ak;
                         }
 
-                        float corr = Math.Abs(gamma) / (float)Math.Sqrt(Math.Max(Epsilon, alpha * beta));
+                        double corr = Math.Abs(gamma) / Math.Sqrt(Math.Max(EpsilonDouble, alpha * beta));
                         if (corr > maxCorrelation) maxCorrelation = corr;
 
                         if (Math.Abs(gamma) < tolerance) continue;
 
-                        // Compute Jacobi rotation angle
-                        float zeta = (beta - alpha) / (2.0f * gamma);
-                        float t = (float)(Math.Sign(zeta) / (Math.Abs(zeta) + Math.Sqrt(1.0 + zeta * zeta)));
-                        float c = 1.0f / (float)Math.Sqrt(1.0 + t * t);
-                        float s = t * c;
+                        double zeta = (beta - alpha) / (2.0 * gamma);
+                        double t = Math.Sign(zeta) / (Math.Abs(zeta) + Math.Sqrt(1.0 + zeta * zeta));
+                        double c = 1.0 / Math.Sqrt(1.0 + t * t);
+                        double s = t * c;
 
-                        // Rotate columns j and k of workA
                         for (int i = 0; i < m; i++)
                         {
-                            float aj = workA[i, j];
-                            float ak = workA[i, k];
+                            double aj = workA[i, j];
+                            double ak = workA[i, k];
                             workA[i, j] = c * aj - s * ak;
                             workA[i, k] = s * aj + c * ak;
                         }
 
-                        // Rotate columns j and k of V
                         for (int i = 0; i < n; i++)
                         {
-                            float vj = V[i, j];
-                            float vk = V[i, k];
+                            double vj = V[i, j];
+                            double vk = V[i, k];
                             V[i, j] = c * vj - s * vk;
                             V[i, k] = s * vj + c * vk;
                         }
@@ -452,34 +419,32 @@ namespace ZeroTensor.Core
                 }
             }
 
-            // Compute singular values as norms of columns of workA
-            var singularVals = new float[n];
+            var singularVals = new double[n];
             var colIndices = new int[n];
             for (int j = 0; j < n; j++)
             {
-                float colNormSq = 0f;
+                double colNormSq = 0.0;
                 for (int i = 0; i < m; i++)
                 {
                     colNormSq += workA[i, j] * workA[i, j];
                 }
-                singularVals[j] = (float)Math.Sqrt(colNormSq);
+                singularVals[j] = Math.Sqrt(colNormSq);
                 colIndices[j] = j;
             }
 
-            // Sort singular values descending
             Array.Sort(colIndices, (idx1, idx2) => singularVals[idx2].CompareTo(singularVals[idx1]));
 
-            var sortedS = new float[n];
-            U = new Tensor<float>(m, n);
-            var sortedV = new Tensor<float>(n, n);
+            var sortedS = new double[n];
+            U = new Tensor<double>(m, n);
+            var sortedV = new Tensor<double>(n, n);
 
             for (int j = 0; j < n; j++)
             {
                 int origCol = colIndices[j];
-                float sVal = singularVals[origCol];
+                double sVal = singularVals[origCol];
                 sortedS[j] = sVal;
 
-                float invS = sVal > Epsilon ? 1.0f / sVal : 0f;
+                double invS = sVal > EpsilonDouble ? 1.0 / sVal : 0.0;
                 for (int i = 0; i < m; i++)
                 {
                     U[i, j] = workA[i, origCol] * invS;
@@ -496,37 +461,29 @@ namespace ZeroTensor.Core
 
             if (transposed)
             {
-                // If original A was transposed (M < N): A = (V) * S * (U^T)
                 var tmpU = U;
                 U = sortedV;
                 Vt = tmpU.Transpose(0, 1).Clone();
             }
         }
 
-        /// <summary>
-        /// SVD alias matching standard naming.
-        /// </summary>
         public static void Svd(
-            Tensor<float> A,
-            out Tensor<float> U,
-            out Tensor<float> S,
-            out Tensor<float> Vt,
+            Tensor<double> A,
+            out Tensor<double> U,
+            out Tensor<double> S,
+            out Tensor<double> Vt,
             int maxSweeps = 30,
-            float tolerance = 1e-6f) => SVD(A, out U, out S, out Vt, maxSweeps, tolerance);
-
-        #endregion
-
-        #region Symmetric Eigendecomposition (Eigh)
+            double tolerance = 1e-12) => SVD(A, out U, out S, out Vt, maxSweeps, tolerance);
 
         /// <summary>
-        /// Computes eigenvalues and eigenvectors of a real symmetric matrix A using the Cyclic Jacobi method: A = V * diag(w) * V^T.
+        /// Computes eigenvalues and eigenvectors of a real symmetric matrix A using the Cyclic Jacobi method (double precision).
         /// </summary>
         public static void Eigh(
-            Tensor<float> A,
-            out Tensor<float> eigenvalues,
-            out Tensor<float> eigenvectors,
+            Tensor<double> A,
+            out Tensor<double> eigenvalues,
+            out Tensor<double> eigenvectors,
             int maxSweeps = 50,
-            float tolerance = 1e-7f)
+            double tolerance = 1e-12)
         {
             if (A.Rank != 2 || A.Shape[0] != A.Shape[1])
             {
@@ -535,11 +492,12 @@ namespace ZeroTensor.Core
 
             int n = A.Shape[0];
             var a = A.Clone();
-            var v = Tensor.Eye(n);
+            var v = Tensor.Zeros<double>(n, n);
+            for (int i = 0; i < n; i++) v[i, i] = 1.0;
 
             for (int sweep = 0; sweep < maxSweeps; sweep++)
             {
-                float sumOffDiag = 0f;
+                double sumOffDiag = 0.0;
                 for (int i = 0; i < n; i++)
                 {
                     for (int j = i + 1; j < n; j++)
@@ -557,38 +515,38 @@ namespace ZeroTensor.Core
                 {
                     for (int q = p + 1; q < n; q++)
                     {
-                        float apq = a[p, q];
-                        if (Math.Abs(apq) < 1e-12f) continue;
+                        double apq = a[p, q];
+                        if (Math.Abs(apq) < 1e-15) continue;
 
-                        float app = a[p, p];
-                        float aqq = a[q, q];
-                        float theta = (aqq - app) / (2.0f * apq);
-                        float t;
-                        if (Math.Abs(theta) < 1e-12f)
+                        double app = a[p, p];
+                        double aqq = a[q, q];
+                        double theta = (aqq - app) / (2.0 * apq);
+                        double t;
+                        if (Math.Abs(theta) < 1e-15)
                         {
-                            t = 1.0f;
+                            t = 1.0;
                         }
                         else
                         {
-                            t = (float)(Math.Sign(theta) / (Math.Abs(theta) + Math.Sqrt(1.0 + theta * theta)));
+                            t = Math.Sign(theta) / (Math.Abs(theta) + Math.Sqrt(1.0 + theta * theta));
                         }
-                        if (float.IsNaN(t)) t = 0f;
+                        if (double.IsNaN(t)) t = 0.0;
 
-                        float c = 1.0f / (float)Math.Sqrt(1.0 + t * t);
-                        float s = t * c;
-                        float tau = s / (1.0f + c);
+                        double c = 1.0 / Math.Sqrt(1.0 + t * t);
+                        double s = t * c;
+                        double tau = s / (1.0 + c);
 
                         a[p, p] -= t * apq;
                         a[q, q] += t * apq;
-                        a[p, q] = 0f;
-                        a[q, p] = 0f;
+                        a[p, q] = 0.0;
+                        a[q, p] = 0.0;
 
                         for (int i = 0; i < n; i++)
                         {
                             if (i != p && i != q)
                             {
-                                float aip = a[i, p];
-                                float aiq = a[i, q];
+                                double aip = a[i, p];
+                                double aiq = a[i, q];
                                 a[i, p] = aip - s * (aiq + aip * tau);
                                 a[p, i] = a[i, p];
                                 a[i, q] = aiq + s * (aip - aiq * tau);
@@ -598,8 +556,8 @@ namespace ZeroTensor.Core
 
                         for (int i = 0; i < n; i++)
                         {
-                            float vip = v[i, p];
-                            float viq = v[i, q];
+                            double vip = v[i, p];
+                            double viq = v[i, q];
                             v[i, p] = vip - s * (viq + vip * tau);
                             v[i, q] = viq + s * (vip - viq * tau);
                         }
@@ -607,7 +565,7 @@ namespace ZeroTensor.Core
                 }
             }
 
-            var vals = new float[n];
+            var vals = new double[n];
             var indices = new int[n];
             for (int i = 0; i < n; i++)
             {
@@ -617,8 +575,8 @@ namespace ZeroTensor.Core
 
             Array.Sort(indices, (i1, i2) => vals[i1].CompareTo(vals[i2]));
 
-            var sortedVals = new float[n];
-            var sortedV = new Tensor<float>(n, n);
+            var sortedVals = new double[n];
+            var sortedV = new Tensor<double>(n, n);
 
             for (int j = 0; j < n; j++)
             {
@@ -634,17 +592,13 @@ namespace ZeroTensor.Core
             eigenvectors = sortedV;
         }
 
-        public static void Eigen(Tensor<float> A, out Tensor<float> eigenvalues, out Tensor<float> eigenvectors) =>
+        public static void Eigen(Tensor<double> A, out Tensor<double> eigenvalues, out Tensor<double> eigenvectors) =>
             Eigh(A, out eigenvalues, out eigenvectors);
 
-        #endregion
-
-        #region Moore-Penrose Pseudoinverse & Matrix Analytics
-
         /// <summary>
-        /// Computes the Moore-Penrose pseudoinverse of matrix A using SVD: A^+ = V * S^+ * U^T.
+        /// Computes the Moore-Penrose pseudoinverse of matrix A (double precision): A^+ = V * S^+ * U^T.
         /// </summary>
-        public static Tensor<float> Pinverse(Tensor<float> A, float rcond = 1e-5f)
+        public static Tensor<double> Pinverse(Tensor<double> A, double rcond = 1e-12)
         {
             if (A.Rank != 2) throw new ArgumentException("Pseudoinverse requires a 2D matrix.", nameof(A));
             int m = A.Shape[0];
@@ -652,17 +606,17 @@ namespace ZeroTensor.Core
 
             SVD(A, out var U, out var S, out var Vt);
 
-            float maxS = S.Length > 0 ? S[0] : 0f;
-            float cutoff = rcond * maxS;
+            double maxS = S.Length > 0 ? S[0] : 0.0;
+            double cutoff = rcond * maxS;
 
             int k = S.Length;
-            var Sp = new Tensor<float>(k, k);
+            var Sp = new Tensor<double>(k, k);
             for (int i = 0; i < k; i++)
             {
-                float sVal = S[i];
+                double sVal = S[i];
                 if (sVal > cutoff)
                 {
-                    Sp[i, i] = 1.0f / sVal;
+                    Sp[i, i] = 1.0 / sVal;
                 }
             }
 
@@ -673,35 +627,35 @@ namespace ZeroTensor.Core
             return TensorBlas.MatMul(V_Sp, Ut);
         }
 
-        public static Tensor<float> Pinv(Tensor<float> A, float rcond = 1e-5f) => Pinverse(A, rcond);
+        public static Tensor<double> Pinv(Tensor<double> A, double rcond = 1e-12) => Pinverse(A, rcond);
 
         /// <summary>
-        /// Computes the sum of elements along the main diagonal of a square matrix.
+        /// Computes the sum of elements along the main diagonal of a square double matrix.
         /// </summary>
-        public static float Trace(Tensor<float> A)
+        public static double Trace(Tensor<double> A)
         {
             if (A.Rank != 2 || A.Shape[0] != A.Shape[1])
                 throw new ArgumentException("Trace requires a square matrix.", nameof(A));
 
-            float sum = 0f;
+            double sum = 0.0;
             int n = A.Shape[0];
             for (int i = 0; i < n; i++) sum += A[i, i];
             return sum;
         }
 
         /// <summary>
-        /// Extracts the diagonal of a 2D matrix.
+        /// Extracts the diagonal of a 2D double matrix.
         /// </summary>
-        public static Tensor<float> Diagonal(Tensor<float> A, int offset = 0)
+        public static Tensor<double> Diagonal(Tensor<double> A, int offset = 0)
         {
             if (A.Rank != 2) throw new ArgumentException("Diagonal requires a 2D matrix.", nameof(A));
             int rows = A.Shape[0];
             int cols = A.Shape[1];
 
             int count = offset >= 0 ? Math.Min(rows, cols - offset) : Math.Min(rows + offset, cols);
-            if (count <= 0) return new Tensor<float>(0);
+            if (count <= 0) return new Tensor<double>(0);
 
-            var diag = new Tensor<float>(count);
+            var diag = new Tensor<double>(count);
             int rStart = offset < 0 ? -offset : 0;
             int cStart = offset > 0 ? offset : 0;
 
@@ -713,12 +667,12 @@ namespace ZeroTensor.Core
         }
 
         /// <summary>
-        /// Computes the numerical matrix rank of A via SVD.
+        /// Computes the numerical matrix rank of A via SVD (double precision).
         /// </summary>
-        public static int MatrixRank(Tensor<float> A, float tol = 1e-5f)
+        public static int MatrixRank(Tensor<double> A, double tol = 1e-12)
         {
             SVD(A, out _, out var S, out _);
-            float cutoff = tol * (S.Length > 0 ? S[0] : 0f);
+            double cutoff = tol * (S.Length > 0 ? S[0] : 0.0);
             int rank = 0;
             for (int i = 0; i < S.Length; i++)
             {

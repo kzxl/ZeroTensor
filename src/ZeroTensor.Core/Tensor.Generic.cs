@@ -172,6 +172,100 @@ namespace ZeroTensor.Core
             }
         }
 
+        /// <summary>
+        /// Slices a 1D tensor using a modern C# Range.
+        /// </summary>
+        public Tensor<T> this[Range r]
+        {
+            get
+            {
+                if (Rank != 1) throw new InvalidOperationException($"Rank is {Rank}, expected 1.");
+                var (start, len) = ResolveRange(r, _shape[0]);
+                return Slice(0, start, len);
+            }
+        }
+
+        /// <summary>
+        /// Slices a 2D tensor using row and column Ranges.
+        /// </summary>
+        public Tensor<T> this[Range r, Range c]
+        {
+            get
+            {
+                if (Rank != 2) throw new InvalidOperationException($"Rank is {Rank}, expected 2.");
+                var (rStart, rLen) = ResolveRange(r, _shape[0]);
+                var (cStart, cLen) = ResolveRange(c, _shape[1]);
+                return Slice(0, rStart, rLen).Slice(1, cStart, cLen);
+            }
+        }
+
+        /// <summary>
+        /// Slices a row of a 2D tensor across column Range, returning a 1D vector view.
+        /// </summary>
+        public Tensor<T> this[int r, Range c]
+        {
+            get
+            {
+                if (Rank != 2) throw new InvalidOperationException($"Rank is {Rank}, expected 2.");
+                var (cStart, cLen) = ResolveRange(c, _shape[1]);
+                return SubTensor(r).Slice(0, cStart, cLen);
+            }
+        }
+
+        /// <summary>
+        /// Slices a column of a 2D tensor across row Range, returning a 1D vector view.
+        /// </summary>
+        public Tensor<T> this[Range r, int c]
+        {
+            get
+            {
+                if (Rank != 2) throw new InvalidOperationException($"Rank is {Rank}, expected 2.");
+                var (rStart, rLen) = ResolveRange(r, _shape[0]);
+                return Slice(0, rStart, rLen).Slice(1, c, 1).Squeeze(1);
+            }
+        }
+
+        /// <summary>
+        /// Slices a 3D tensor using dimension Ranges.
+        /// </summary>
+        public Tensor<T> this[Range d0, Range d1, Range d2]
+        {
+            get
+            {
+                if (Rank != 3) throw new InvalidOperationException($"Rank is {Rank}, expected 3.");
+                var (s0, l0) = ResolveRange(d0, _shape[0]);
+                var (s1, l1) = ResolveRange(d1, _shape[1]);
+                var (s2, l2) = ResolveRange(d2, _shape[2]);
+                return Slice(0, s0, l0).Slice(1, s1, l1).Slice(2, s2, l2);
+            }
+        }
+
+        /// <summary>
+        /// Slices a 4D tensor using dimension Ranges.
+        /// </summary>
+        public Tensor<T> this[Range d0, Range d1, Range d2, Range d3]
+        {
+            get
+            {
+                if (Rank != 4) throw new InvalidOperationException($"Rank is {Rank}, expected 4.");
+                var (s0, l0) = ResolveRange(d0, _shape[0]);
+                var (s1, l1) = ResolveRange(d1, _shape[1]);
+                var (s2, l2) = ResolveRange(d2, _shape[2]);
+                var (s3, l3) = ResolveRange(d3, _shape[3]);
+                return Slice(0, s0, l0).Slice(1, s1, l1).Slice(2, s2, l2).Slice(3, s3, l3);
+            }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static (int Start, int Length) ResolveRange(Range range, int dimSize)
+        {
+            int start = range.Start.GetOffset(dimSize);
+            int end = range.End.GetOffset(dimSize);
+            if (start < 0 || start > dimSize) throw new ArgumentOutOfRangeException(nameof(range), $"Start index {start} out of range [0, {dimSize}].");
+            if (end < start || end > dimSize) throw new ArgumentOutOfRangeException(nameof(range), $"End index {end} out of range [{start}, {dimSize}].");
+            return (start, end - start);
+        }
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private void ValidateIndices(int[] indices)
         {
@@ -402,6 +496,56 @@ namespace ZeroTensor.Core
             var broadcastStrides = TensorStrides.ComputeBroadcastStrides(_shape, _strides, targetShape);
             return new Tensor<T>(_buffer, _offset, targetShape, broadcastStrides);
         }
+
+        #endregion
+
+        #region Structural & Array API Operations
+
+        /// <summary>
+        /// Concatenates this tensor with another tensor along the specified axis.
+        /// </summary>
+        public Tensor<T> Concat(Tensor<T> other, int axis = 0) => Tensor.Concat(new[] { this, other }, axis);
+
+        /// <summary>
+        /// Splits this tensor into equal parts along the specified axis.
+        /// </summary>
+        public Tensor<T>[] Split(int parts, int axis = 0) => Tensor.Split(this, parts, axis);
+
+        /// <summary>
+        /// Splits this tensor into multiple tensors along the specified axis according to given section sizes.
+        /// </summary>
+        public Tensor<T>[] Split(int[] splitSizes, int axis = 0) => Tensor.Split(this, splitSizes, axis);
+
+        /// <summary>
+        /// Splits this tensor into chunks of the specified size along an axis.
+        /// </summary>
+        public Tensor<T>[] Chunk(int chunkSize, int axis = 0) => Tensor.Chunk(this, chunkSize, axis);
+
+        /// <summary>
+        /// Pads this tensor with specified amounts before and after each dimension.
+        /// </summary>
+        public Tensor<T> Pad(int[] padBefore, int[] padAfter, PadMode mode = PadMode.Constant, T constantValue = default) =>
+            Tensor.Pad(this, padBefore, padAfter, mode, constantValue);
+
+        /// <summary>
+        /// Constructs a new tensor by repeating tensor dimensions the number of times given by reps.
+        /// </summary>
+        public Tensor<T> Tile(params int[] reps) => Tensor.Tile(this, reps);
+
+        /// <summary>
+        /// Repeats elements of this tensor along an axis.
+        /// </summary>
+        public Tensor<T> Repeat(int repeats, int axis) => Tensor.Repeat(this, repeats, axis);
+
+        /// <summary>
+        /// Rolls tensor elements along the given axis circularly by the specified shift amount.
+        /// </summary>
+        public Tensor<T> Roll(int shift, int axis = 0) => Tensor.Roll(this, shift, axis);
+
+        /// <summary>
+        /// Reverses the order of elements in this tensor along the given axis.
+        /// </summary>
+        public Tensor<T> Flip(int axis = 0) => Tensor.Flip(this, axis);
 
         #endregion
 
