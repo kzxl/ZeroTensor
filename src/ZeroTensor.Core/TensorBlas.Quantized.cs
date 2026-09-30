@@ -190,5 +190,96 @@ namespace ZeroTensor.Core
                 spanC[i] = spanIntC[i] * combinedScale;
             }
         }
+
+        /// <summary>
+        /// Packed INT4 (4-bit nibble) General Matrix Multiply: C (M x N) = A (M x K) @ B_int4 (K x N).
+        /// Each byte in packedWeights stores two 4-bit weights (low nibble = row 2*l, high nibble = row 2*l+1).
+        /// Real weights are computed via: weight = (nibble - zeroPoint) * scale.
+        /// Delivers 4x memory compression for edge LLM and vision model inference.
+        /// </summary>
+        public static Tensor<float> GemmInt4(
+            Tensor<float> activation,
+            Tensor<byte> packedWeights,
+            Tensor<float> scales,
+            Tensor<float>? zeroPoints = null)
+        {
+            if (activation == null) throw new ArgumentNullException(nameof(activation));
+            if (packedWeights == null) throw new ArgumentNullException(nameof(packedWeights));
+            if (scales == null) throw new ArgumentNullException(nameof(scales));
+
+            if (activation.Rank != 2 || packedWeights.Rank != 2)
+                throw new ArgumentException("GemmInt4 requires rank-2 activation and packed weight tensors.");
+
+            int m = activation.Shape[0];
+            int k = activation.Shape[1];
+            int packedK = packedWeights.Shape[0];
+            int n = packedWeights.Shape[1];
+
+            if (packedK != (k + 1) / 2)
+            {
+                throw new InvalidOperationException($"Inner dimension mismatch: activation K={k}, but packedWeights K={packedK} (expected {(k + 1) / 2}).");
+            }
+            if (scales.Length < n)
+            {
+                throw new InvalidOperationException($"Scales length {scales.Length} must be at least N={n}.");
+            }
+
+            var c = new Tensor<float>(m, n);
+            var actContig = activation.ToContiguous();
+            var actBuf = actContig.Buffer;
+            int actOff = actContig.Offset;
+            int sAct0 = actContig.Strides[0], sAct1 = actContig.Strides[1];
+
+            var wContig = packedWeights.ToContiguous();
+            var wBuf = wContig.Buffer;
+            int wOff = wContig.Offset;
+            int sW0 = wContig.Strides[0], sW1 = wContig.Strides[1];
+
+            var cBuf = c.Buffer;
+            int cOff = c.Offset;
+            int sC0 = c.Strides[0], sC1 = c.Strides[1];
+
+            var sBuf = scales.Buffer;
+            int sOff = scales.Offset;
+
+            var zpBuf = zeroPoints?.Buffer;
+            int zpOff = zeroPoints?.Offset ?? 0;
+
+            Parallel.For(0, m, i =>
+            {
+                int actRowBase = actOff + i * sAct0;
+                int cRowBase = cOff + i * sC0;
+
+                for (int j = 0; j < n; j++)
+                {
+                    float scale = sBuf[sOff + j];
+                    float zp = zpBuf != null ? zpBuf[zpOff + j] : 0f;
+                    float acc = 0f;
+
+                    for (int l = 0; l < packedK; l++)
+                    {
+                        byte packed = wBuf[wOff + l * sW0 + j * sW1];
+                        int nibble0 = packed & 0x0F;
+                        int nibble1 = (packed >> 4) & 0x0F;
+
+                        int k0 = l * 2;
+                        int k1 = k0 + 1;
+
+                        float w0 = (nibble0 - zp) * scale;
+                        acc += actBuf[actRowBase + k0 * sAct1] * w0;
+
+                        if (k1 < k)
+                        {
+                            float w1 = (nibble1 - zp) * scale;
+                            acc += actBuf[actRowBase + k1 * sAct1] * w1;
+                        }
+                    }
+
+                    cBuf[cRowBase + j * sC1] = acc;
+                }
+            });
+
+            return c;
+        }
     }
 }

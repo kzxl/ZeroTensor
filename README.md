@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET Multi-Targeting](https://img.shields.io/badge/.NET-8.0%20%7C%204.6.2%20%7C%20Standard%202.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20C%23)-brightgreen.svg)]()
-[![NuGet Version](https://img.shields.io/badge/NuGet-1.4.0-blue.svg)](https://www.nuget.org/packages/ZeroTensor.Core)
+[![NuGet Version](https://img.shields.io/badge/NuGet-1.5.0-blue.svg)](https://www.nuget.org/packages/ZeroTensor.Core)
 
 **ZeroTensor** is an ultra-high-performance, multidimensional strided tensor computing library for .NET with **zero external dependencies**. Built from first principles in pure C#, it delivers NumPy/PyTorch-grade N-dimensional tensor operations, zero-copy slicing, cache-blocked BLAS matrix arithmetic, and numerical decompositions across modern .NET and legacy .NET Framework platforms.
 
@@ -16,8 +16,8 @@
 - **N-Dimensional Strided Memory Layout**: Flexible shape descriptors and strides allowing zero-copy views, broadcasting, slicing, transposing, and reshaping.
 - **Zero-GC Memory Pooling (`TensorPool`)**: Rent and recycle tensor memory buffers with `using var t = Tensor.Rent<float>(shape)` backed by `ArrayPool<T>.Shared` to eliminate GC pauses in hot inference loops.
 - **In-Place SIMD Vector Operations**: High-throughput vectorized in-place mutators (`Add_`, `Subtract_`, `Multiply_`, `Divide_`, `Relu_`, `Clamp_`) and destination buffer overloads.
-- **FP16 (`Half`) Precision Tensor Computing**: First-class `Tensor<Half>` data structures, bidirectional conversions (`ToHalf()`, `ToFloat()`, `ToDouble()`), element-wise FP16 arithmetic and activations (`ReLU`, `GELU`, `Sigmoid`, `Tanh`, `Exp`), and mixed-precision FP16 GEMM accumulating in FP32 registers. Includes transparent zero-dependency IEEE 754 half-precision polyfill for `netstandard2.0` and `net462`.
-- **Cache-Blocked Level-3 BLAS & INT8 GEMM**: Highly optimized FP32/FP64 GEMM with register and L1/L2 cache tiling, plus quantized INT8 matrix multiplication (`GemmInt8`) with zero-point offset and FP32 scaling.
+- **Next-Gen AI Datatypes (FP16 & BFloat16)**: First-class `Tensor<Half>` and `Tensor<BFloat16>` data structures, instant bitshift conversions, element-wise arithmetic, activations (`ReLU`, `GELU`, `Sigmoid`, `Tanh`, `Exp`), and mixed-precision GEMM accumulating in FP32 registers. Includes transparent zero-dependency IEEE 754 half-precision polyfill for `netstandard2.0` and `net462`.
+- **Quantized Matrix Arithmetic (INT8 & INT4)**: Highly optimized FP32/FP64 GEMM with register and L1/L2 cache tiling, INT8 matrix multiplication (`GemmInt8`), and packed 4-bit nibble quantized GEMM (`GemmInt4`) with per-channel scale and zero-point dequantization for edge LLMs.
 - **Universal Model & Array Serialization**: Zero-dependency reading and writing of standard NumPy (`.npy`) files and Hugging Face Safetensors (`.safetensors`) weights.
 - **Advanced Reductions & Slicing**: `TopK`, `Gather`, `CumSum`, `OneHot`, `ArgMax`, `ArgMin`, and C# 8+ `Range`/`Index` slicing.
 - **Numerical Matrix Decompositions**:

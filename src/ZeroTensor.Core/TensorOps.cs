@@ -34,6 +34,13 @@ namespace ZeroTensor.Core
                 var hres = AddHalf(ha, hb);
                 return (Tensor<T>)(object)hres;
             }
+            if (typeof(T) == typeof(BFloat16))
+            {
+                var bfa = (Tensor<BFloat16>)(object)a;
+                var bfb = (Tensor<BFloat16>)(object)b;
+                var bfres = AddBFloat16(bfa, bfb);
+                return (Tensor<T>)(object)bfres;
+            }
 
             throw new NotSupportedException($"Add not implemented for type {typeof(T)}.");
         }
@@ -60,6 +67,13 @@ namespace ZeroTensor.Core
                 var hb = (Tensor<Half>)(object)b;
                 var hres = SubtractHalf(ha, hb);
                 return (Tensor<T>)(object)hres;
+            }
+            if (typeof(T) == typeof(BFloat16))
+            {
+                var bfa = (Tensor<BFloat16>)(object)a;
+                var bfb = (Tensor<BFloat16>)(object)b;
+                var bfres = SubtractBFloat16(bfa, bfb);
+                return (Tensor<T>)(object)bfres;
             }
 
             throw new NotSupportedException($"Subtract not implemented for type {typeof(T)}.");
@@ -88,6 +102,13 @@ namespace ZeroTensor.Core
                 var hres = MultiplyHalf(ha, hb);
                 return (Tensor<T>)(object)hres;
             }
+            if (typeof(T) == typeof(BFloat16))
+            {
+                var bfa = (Tensor<BFloat16>)(object)a;
+                var bfb = (Tensor<BFloat16>)(object)b;
+                var bfres = MultiplyBFloat16(bfa, bfb);
+                return (Tensor<T>)(object)bfres;
+            }
 
             throw new NotSupportedException($"Multiply not implemented for type {typeof(T)}.");
         }
@@ -115,6 +136,13 @@ namespace ZeroTensor.Core
                 var hres = DivideHalf(ha, hb);
                 return (Tensor<T>)(object)hres;
             }
+            if (typeof(T) == typeof(BFloat16))
+            {
+                var bfa = (Tensor<BFloat16>)(object)a;
+                var bfb = (Tensor<BFloat16>)(object)b;
+                var bfres = DivideBFloat16(bfa, bfb);
+                return (Tensor<T>)(object)bfres;
+            }
 
             throw new NotSupportedException($"Divide not implemented for type {typeof(T)}.");
         }
@@ -135,6 +163,11 @@ namespace ZeroTensor.Core
             {
                 var ha = (Tensor<Half>)(object)a;
                 return (Tensor<T>)(object)NegateHalf(ha);
+            }
+            if (typeof(T) == typeof(BFloat16))
+            {
+                var bfa = (Tensor<BFloat16>)(object)a;
+                return (Tensor<T>)(object)NegateBFloat16(bfa);
             }
 
             throw new NotSupportedException($"Negate not implemented for type {typeof(T)}.");
