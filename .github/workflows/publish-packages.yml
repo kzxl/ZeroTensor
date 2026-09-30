@@ -26,6 +26,9 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+          source-url: https://nuget.pkg.github.com/kzxl/index.json
+        env:
+          NUGET_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Pack ZeroTensor.Core
         run: dotnet pack src/ZeroTensor.Core/ZeroTensor.Core.csproj -c Release -o nupkgs
