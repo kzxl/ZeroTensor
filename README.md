@@ -16,6 +16,7 @@
 - **N-Dimensional Strided Memory Layout**: Flexible shape descriptors and strides allowing zero-copy views, broadcasting, slicing, transposing, and reshaping.
 - **Zero-GC Memory Pooling (`TensorPool`)**: Rent and recycle tensor memory buffers with `using var t = Tensor.Rent<float>(shape)` backed by `ArrayPool<T>.Shared` to eliminate GC pauses in hot inference loops.
 - **In-Place SIMD Vector Operations**: High-throughput vectorized in-place mutators (`Add_`, `Subtract_`, `Multiply_`, `Divide_`, `Relu_`, `Clamp_`) and destination buffer overloads.
+- **FP16 (`Half`) Precision Tensor Computing**: First-class `Tensor<Half>` data structures, bidirectional conversions (`ToHalf()`, `ToFloat()`, `ToDouble()`), element-wise FP16 arithmetic and activations (`ReLU`, `GELU`, `Sigmoid`, `Tanh`, `Exp`), and mixed-precision FP16 GEMM accumulating in FP32 registers. Includes transparent zero-dependency IEEE 754 half-precision polyfill for `netstandard2.0` and `net462`.
 - **Cache-Blocked Level-3 BLAS & INT8 GEMM**: Highly optimized FP32/FP64 GEMM with register and L1/L2 cache tiling, plus quantized INT8 matrix multiplication (`GemmInt8`) with zero-point offset and FP32 scaling.
 - **Universal Model & Array Serialization**: Zero-dependency reading and writing of standard NumPy (`.npy`) files and Hugging Face Safetensors (`.safetensors`) weights.
 - **Advanced Reductions & Slicing**: `TopK`, `Gather`, `CumSum`, `OneHot`, `ArgMax`, `ArgMin`, and C# 8+ `Range`/`Index` slicing.
@@ -117,6 +118,24 @@ var weights = new Dictionary<string, Tensor<float>>
 };
 SafetensorsFile.Save("model.safetensors", weights);
 var loadedWeights = SafetensorsFile.Load("model.safetensors");
+```
+
+### 6. Half-Precision (FP16) Computing & Mixed-Precision GEMM
+```csharp
+// Convert FP32 tensor to FP16
+var floatTensor = Tensor.RandomUniform(256, 256);
+Tensor<Half> halfTensorA = floatTensor.ToHalf();
+Tensor<Half> halfTensorB = floatTensor.ToHalf();
+
+// Element-wise FP16 arithmetic and activations
+var sum = TensorOps.Add(halfTensorA, halfTensorB);
+var activated = TensorOps.ReLUHalf(sum);
+
+// Cache-blocked mixed-precision matrix multiplication (FP16 input/output, FP32 accumulator)
+Tensor<Half> matmulResult = TensorBlas.MatMul(halfTensorA, halfTensorB);
+
+// Convert back to FP32 if needed
+Tensor<float> floatResult = matmulResult.ToFloat();
 ```
 
 ---
