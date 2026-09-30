@@ -11,6 +11,7 @@ namespace ZeroTensor.Core
     {
         public delegate float BinaryFloatOp(float a, float b);
         public delegate double BinaryDoubleOp(double a, double b);
+        public delegate Half BinaryHalfOp(Half a, Half b);
 
         /// <summary>
         /// Executes an element-wise binary operation between two float tensors with automatic broadcasting.
@@ -82,6 +83,89 @@ namespace ZeroTensor.Core
 
             ApplyBroadcastedDouble(a, b, outTensor, stridesA, stridesB, op);
             return outTensor;
+        }
+
+        /// <summary>
+        /// Executes an element-wise binary operation between two half-precision tensors with automatic broadcasting.
+        /// </summary>
+        public static Tensor<Half> Apply(Tensor<Half> a, Tensor<Half> b, BinaryHalfOp op)
+        {
+            if (a == null) throw new ArgumentNullException(nameof(a));
+            if (b == null) throw new ArgumentNullException(nameof(b));
+            if (op == null) throw new ArgumentNullException(nameof(op));
+
+            if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
+            {
+                var result = new Tensor<Half>(a.Shape);
+                var spanA = a.AsReadOnlySpan();
+                var spanB = b.AsReadOnlySpan();
+                var spanRes = result.AsSpan();
+
+                for (int i = 0; i < spanA.Length; i++)
+                {
+                    spanRes[i] = op(spanA[i], spanB[i]);
+                }
+                return result;
+            }
+
+            if (!a.Shape.IsCompatibleForBroadcasting(b.Shape, out var outShape))
+            {
+                throw new InvalidOperationException($"Operands could not be broadcast together with shapes {a.Shape} and {b.Shape}.");
+            }
+
+            var outTensor = new Tensor<Half>(outShape);
+            var stridesA = TensorStrides.ComputeBroadcastStrides(a.Shape, a.Strides.ToArray(), outShape);
+            var stridesB = TensorStrides.ComputeBroadcastStrides(b.Shape, b.Strides.ToArray(), outShape);
+
+            ApplyBroadcastedHalf(a, b, outTensor, stridesA, stridesB, op);
+            return outTensor;
+        }
+
+        private static void ApplyBroadcastedHalf(
+            Tensor<Half> a,
+            Tensor<Half> b,
+            Tensor<Half> outTensor,
+            int[] stridesA,
+            int[] stridesB,
+            BinaryHalfOp op)
+        {
+            int total = outTensor.Length;
+            int rank = outTensor.Rank;
+            var coords = new int[rank];
+            var bufA = a.Buffer;
+            var bufB = b.Buffer;
+            var bufOut = outTensor.Buffer;
+            int offA = a.Offset;
+            int offB = b.Offset;
+            int offOut = outTensor.Offset;
+            var stridesOut = outTensor.Strides;
+
+            for (int idx = 0; idx < total; idx++)
+            {
+                int flatA = offA;
+                int flatB = offB;
+                int flatOut = offOut;
+
+                for (int d = 0; d < rank; d++)
+                {
+                    int c = coords[d];
+                    flatA += c * stridesA[d];
+                    flatB += c * stridesB[d];
+                    flatOut += c * stridesOut[d];
+                }
+
+                bufOut[flatOut] = op(bufA[flatA], bufB[flatB]);
+
+                for (int d = rank - 1; d >= 0; d--)
+                {
+                    coords[d]++;
+                    if (coords[d] < outTensor.Shape[d])
+                    {
+                        break;
+                    }
+                    coords[d] = 0;
+                }
+            }
         }
 
         /// <summary>

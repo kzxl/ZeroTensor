@@ -27,6 +27,13 @@ namespace ZeroTensor.Core
                 var dres = AddDouble(da, db);
                 return (Tensor<T>)(object)dres;
             }
+            if (typeof(T) == typeof(Half))
+            {
+                var ha = (Tensor<Half>)(object)a;
+                var hb = (Tensor<Half>)(object)b;
+                var hres = AddHalf(ha, hb);
+                return (Tensor<T>)(object)hres;
+            }
 
             throw new NotSupportedException($"Add not implemented for type {typeof(T)}.");
         }
@@ -46,6 +53,13 @@ namespace ZeroTensor.Core
                 var db = (Tensor<double>)(object)b;
                 var dres = SubtractDouble(da, db);
                 return (Tensor<T>)(object)dres;
+            }
+            if (typeof(T) == typeof(Half))
+            {
+                var ha = (Tensor<Half>)(object)a;
+                var hb = (Tensor<Half>)(object)b;
+                var hres = SubtractHalf(ha, hb);
+                return (Tensor<T>)(object)hres;
             }
 
             throw new NotSupportedException($"Subtract not implemented for type {typeof(T)}.");
@@ -67,6 +81,13 @@ namespace ZeroTensor.Core
                 var dres = MultiplyDouble(da, db);
                 return (Tensor<T>)(object)dres;
             }
+            if (typeof(T) == typeof(Half))
+            {
+                var ha = (Tensor<Half>)(object)a;
+                var hb = (Tensor<Half>)(object)b;
+                var hres = MultiplyHalf(ha, hb);
+                return (Tensor<T>)(object)hres;
+            }
 
             throw new NotSupportedException($"Multiply not implemented for type {typeof(T)}.");
         }
@@ -87,6 +108,13 @@ namespace ZeroTensor.Core
                 var dres = DivideDouble(da, db);
                 return (Tensor<T>)(object)dres;
             }
+            if (typeof(T) == typeof(Half))
+            {
+                var ha = (Tensor<Half>)(object)a;
+                var hb = (Tensor<Half>)(object)b;
+                var hres = DivideHalf(ha, hb);
+                return (Tensor<T>)(object)hres;
+            }
 
             throw new NotSupportedException($"Divide not implemented for type {typeof(T)}.");
         }
@@ -103,6 +131,11 @@ namespace ZeroTensor.Core
                 var da = (Tensor<double>)(object)a;
                 return (Tensor<T>)(object)NegateDouble(da);
             }
+            if (typeof(T) == typeof(Half))
+            {
+                var ha = (Tensor<Half>)(object)a;
+                return (Tensor<T>)(object)NegateHalf(ha);
+            }
 
             throw new NotSupportedException($"Negate not implemented for type {typeof(T)}.");
         }
@@ -116,6 +149,10 @@ namespace ZeroTensor.Core
             if (typeof(T) == typeof(double))
             {
                 return (Tensor<T>)(object)AddScalarDouble((Tensor<double>)(object)a, (double)(object)scalar);
+            }
+            if (typeof(T) == typeof(Half))
+            {
+                return (Tensor<T>)(object)AddScalarHalf((Tensor<Half>)(object)a, (Half)(object)scalar);
             }
 
             throw new NotSupportedException($"AddScalar not implemented for type {typeof(T)}.");
@@ -131,6 +168,10 @@ namespace ZeroTensor.Core
             {
                 return (Tensor<T>)(object)SubtractScalarDouble((Tensor<double>)(object)a, (double)(object)scalar);
             }
+            if (typeof(T) == typeof(Half))
+            {
+                return (Tensor<T>)(object)SubtractScalarHalf((Tensor<Half>)(object)a, (Half)(object)scalar);
+            }
 
             throw new NotSupportedException($"SubtractScalar not implemented for type {typeof(T)}.");
         }
@@ -145,6 +186,10 @@ namespace ZeroTensor.Core
             {
                 return (Tensor<T>)(object)MultiplyScalarDouble((Tensor<double>)(object)a, (double)(object)scalar);
             }
+            if (typeof(T) == typeof(Half))
+            {
+                return (Tensor<T>)(object)MultiplyScalarHalf((Tensor<Half>)(object)a, (Half)(object)scalar);
+            }
 
             throw new NotSupportedException($"MultiplyScalar not implemented for type {typeof(T)}.");
         }
@@ -158,6 +203,10 @@ namespace ZeroTensor.Core
             if (typeof(T) == typeof(double))
             {
                 return (Tensor<T>)(object)DivideScalarDouble((Tensor<double>)(object)a, (double)(object)scalar);
+            }
+            if (typeof(T) == typeof(Half))
+            {
+                return (Tensor<T>)(object)DivideScalarHalf((Tensor<Half>)(object)a, (Half)(object)scalar);
             }
 
             throw new NotSupportedException($"DivideScalar not implemented for type {typeof(T)}.");
