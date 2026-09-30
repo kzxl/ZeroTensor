@@ -154,13 +154,68 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Creates an N x N 2D identity matrix (1s on the main diagonal, 0s elsewhere).
         /// </summary>
-        public static Tensor<float> Eye(int n)
+        public static Tensor<float> Eye(int n) => Eye<float>(n);
+
+        /// <summary>
+        /// Creates an N x N 2D identity matrix of type T (1s on the main diagonal, 0s elsewhere).
+        /// </summary>
+        public static Tensor<T> Eye<T>(int n) where T : unmanaged, IEquatable<T> => Eye<T>(n, n);
+
+        /// <summary>
+        /// Creates a rows x cols 2D identity matrix of type T (1s on the main diagonal, 0s elsewhere).
+        /// </summary>
+        public static Tensor<T> Eye<T>(int rows, int cols) where T : unmanaged, IEquatable<T>
         {
-            if (n < 0) throw new ArgumentOutOfRangeException(nameof(n), "Matrix size must be non-negative.");
-            var tensor = new Tensor<float>(n, n);
-            for (int i = 0; i < n; i++)
+            if (rows < 0) throw new ArgumentOutOfRangeException(nameof(rows), "Rows must be non-negative.");
+            if (cols < 0) throw new ArgumentOutOfRangeException(nameof(cols), "Cols must be non-negative.");
+
+            var tensor = new Tensor<T>(rows, cols);
+            T oneVal = (T)Convert.ChangeType(1, typeof(T));
+            int minDim = Math.Min(rows, cols);
+            for (int i = 0; i < minDim; i++)
             {
-                tensor[i, i] = 1.0f;
+                tensor[i, i] = oneVal;
+            }
+
+            return tensor;
+        }
+
+        /// <summary>
+        /// Creates a 1D tensor with values evenly spaced within [start, stop) with step (double precision).
+        /// </summary>
+        public static Tensor<double> Arange(double start, double stop, double step = 1.0)
+        {
+            if (step == 0) throw new ArgumentException("Step cannot be zero.", nameof(step));
+            if ((step > 0 && start >= stop) || (step < 0 && start <= stop))
+            {
+                return new Tensor<double>(0);
+            }
+
+            int count = (int)Math.Ceiling((stop - start) / step);
+            var tensor = new Tensor<double>(count);
+            for (int i = 0; i < count; i++)
+            {
+                tensor[i] = start + i * step;
+            }
+
+            return tensor;
+        }
+
+        /// <summary>
+        /// Creates a 1D tensor with 'num' evenly spaced numbers over [start, stop] (double precision).
+        /// </summary>
+        public static Tensor<double> Linspace(double start, double stop, int num)
+        {
+            if (num < 0) throw new ArgumentOutOfRangeException(nameof(num), "Number of samples must be non-negative.");
+            if (num == 0) return new Tensor<double>(0);
+            if (num == 1) return FromArray(new[] { start }, 1);
+
+            var tensor = new Tensor<double>(num);
+            double step = (stop - start) / (num - 1);
+
+            for (int i = 0; i < num; i++)
+            {
+                tensor[i] = i == num - 1 ? stop : start + i * step;
             }
 
             return tensor;

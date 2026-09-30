@@ -302,5 +302,80 @@ namespace ZeroTensor.Tests
         }
 
         #endregion
+
+        #region Comparison and Where Tests
+
+        [Fact]
+        public void Comparisons_And_Where_OperateCorrectly()
+        {
+            var a = Tensor.FromArray(new float[] { 1f, 5f, 10f, 2f }, 2, 2);
+            var b = Tensor.FromArray(new float[] { 2f, 3f, 10f, 8f }, 2, 2);
+
+            // GreaterThan: [ [false, true], [false, false] ]
+            var gt = TensorOps.GreaterThan(a, b);
+            Assert.False(gt[0, 0]);
+            Assert.True(gt[0, 1]);
+            Assert.False(gt[1, 0]);
+            Assert.False(gt[1, 1]);
+
+            // Scalar GreaterThan: a > 3f -> [ [false, true], [true, false] ]
+            var gtScalar = TensorOps.GreaterThan(a, 3f);
+            Assert.False(gtScalar[0, 0]);
+            Assert.True(gtScalar[0, 1]);
+            Assert.True(gtScalar[1, 0]);
+            Assert.False(gtScalar[1, 1]);
+
+            // Where(gtScalar, a, 0f) -> [ [0, 5], [10, 0] ]
+            var filtered = Tensor.Where(gtScalar, a, 0f);
+            Assert.Equal(0f, filtered[0, 0]);
+            Assert.Equal(5f, filtered[0, 1]);
+            Assert.Equal(10f, filtered[1, 0]);
+            Assert.Equal(0f, filtered[1, 1]);
+
+            // Mask(a > 3f) -> [ 5, 10 ]
+            var masked = a.Mask(gtScalar);
+            Assert.Equal(new[] { 2 }, masked.Shape.Dimensions);
+            Assert.Equal(5f, masked[0]);
+            Assert.Equal(10f, masked[1]);
+
+            // Any & All
+            Assert.True(Tensor.Any(gtScalar));
+            Assert.False(Tensor.All(gtScalar));
+
+            var allTrue = new Tensor<bool>(2, 2);
+            allTrue.Fill(true);
+            Assert.True(Tensor.All(allTrue));
+        }
+
+        [Fact]
+        public void Generic_Eye_And_Double_Arange_Linspace()
+        {
+            // Generic Eye<double> 3x4
+            var eyeDouble = Tensor.Eye<double>(3, 4);
+            Assert.Equal(new[] { 3, 4 }, eyeDouble.Shape.Dimensions);
+            Assert.Equal(1.0, eyeDouble[0, 0]);
+            Assert.Equal(1.0, eyeDouble[1, 1]);
+            Assert.Equal(1.0, eyeDouble[2, 2]);
+            Assert.Equal(0.0, eyeDouble[0, 1]);
+            Assert.Equal(0.0, eyeDouble[2, 3]);
+
+            // Double Arange
+            var arange = Tensor.Arange(1.0, 4.0, 1.0);
+            Assert.Equal(new[] { 3 }, arange.Shape.Dimensions);
+            Assert.Equal(1.0, arange[0]);
+            Assert.Equal(2.0, arange[1]);
+            Assert.Equal(3.0, arange[2]);
+
+            // Double Linspace
+            var linspace = Tensor.Linspace(0.0, 10.0, 5);
+            Assert.Equal(new[] { 5 }, linspace.Shape.Dimensions);
+            Assert.Equal(0.0, linspace[0]);
+            Assert.Equal(2.5, linspace[1]);
+            Assert.Equal(5.0, linspace[2]);
+            Assert.Equal(7.5, linspace[3]);
+            Assert.Equal(10.0, linspace[4]);
+        }
+
+        #endregion
     }
 }
