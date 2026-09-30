@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET Multi-Targeting](https://img.shields.io/badge/.NET-8.0%20%7C%204.6.2%20%7C%20Standard%202.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20C%23)-brightgreen.svg)]()
-[![NuGet Version](https://img.shields.io/badge/NuGet-1.3.0-blue.svg)](https://www.nuget.org/packages/ZeroTensor.Core)
+[![NuGet Version](https://img.shields.io/badge/NuGet-1.4.0-blue.svg)](https://www.nuget.org/packages/ZeroTensor.Core)
 
 **ZeroTensor** is an ultra-high-performance, multidimensional strided tensor computing library for .NET with **zero external dependencies**. Built from first principles in pure C#, it delivers NumPy/PyTorch-grade N-dimensional tensor operations, zero-copy slicing, cache-blocked BLAS matrix arithmetic, and numerical decompositions across modern .NET and legacy .NET Framework platforms.
 
@@ -17,6 +17,8 @@
 - **Zero-GC Memory Pooling (`TensorPool`)**: Rent and recycle tensor memory buffers with `using var t = Tensor.Rent<float>(shape)` backed by `ArrayPool<T>.Shared` to eliminate GC pauses in hot inference loops.
 - **In-Place SIMD Vector Operations**: High-throughput vectorized in-place mutators (`Add_`, `Subtract_`, `Multiply_`, `Divide_`, `Relu_`, `Clamp_`) and destination buffer overloads.
 - **Cache-Blocked Level-3 BLAS & INT8 GEMM**: Highly optimized FP32/FP64 GEMM with register and L1/L2 cache tiling, plus quantized INT8 matrix multiplication (`GemmInt8`) with zero-point offset and FP32 scaling.
+- **Universal Model & Array Serialization**: Zero-dependency reading and writing of standard NumPy (`.npy`) files and Hugging Face Safetensors (`.safetensors`) weights.
+- **Advanced Reductions & Slicing**: `TopK`, `Gather`, `CumSum`, `OneHot`, `ArgMax`, `ArgMin`, and C# 8+ `Range`/`Index` slicing.
 - **Numerical Matrix Decompositions**:
   - **SVD** (Singular Value Decomposition via Golub-Reinsch / Jacobi rotations)
   - **QR** (Householder reflections)
@@ -98,6 +100,23 @@ rented[0, 0] = 1.0f;
 // High-speed in-place SIMD operations without allocating new tensors
 rented.Tensor.AddScalar_(5.0f);
 rented.Tensor.Relu_();
+```
+
+### 5. Universal Serialization (.safetensors & .npy)
+```csharp
+// Save and load NumPy array (.npy) without Python or external dependencies
+var t = Tensor.RandomUniform(128, 64);
+t.SaveNpy("features.npy");
+var loadedNpy = Tensor.LoadNpy<float>("features.npy");
+
+// Save and load Hugging Face Safetensors (.safetensors)
+var weights = new Dictionary<string, Tensor<float>>
+{
+    ["encoder.weight"] = Tensor.RandomUniform(512, 256),
+    ["encoder.bias"] = Tensor.Zeros<float>(512)
+};
+SafetensorsFile.Save("model.safetensors", weights);
+var loadedWeights = SafetensorsFile.Load("model.safetensors");
 ```
 
 ---

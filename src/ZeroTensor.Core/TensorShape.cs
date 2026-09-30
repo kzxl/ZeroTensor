@@ -289,6 +289,37 @@ namespace ZeroTensor.Core
         /// <inheritdoc />
         public override string ToString() => $"({string.Join(", ", _dimensions)})";
 
+        /// <summary>
+        /// Executes an action for every multidimensional coordinate within this shape.
+        /// </summary>
+        public void ForEachCoordinate(Action<int[]> action)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+            if (Rank == 0)
+            {
+                action(Array.Empty<int>());
+                return;
+            }
+
+            int[] coords = new int[Rank];
+            TraverseCoordinates(coords, 0, action);
+        }
+
+        private void TraverseCoordinates(int[] coords, int currentDim, Action<int[]> action)
+        {
+            if (currentDim == Rank)
+            {
+                action(coords);
+                return;
+            }
+
+            for (int i = 0; i < _dimensions[currentDim]; i++)
+            {
+                coords[currentDim] = i;
+                TraverseCoordinates(coords, currentDim + 1, action);
+            }
+        }
+
         public static bool operator ==(TensorShape? a, TensorShape? b) => a?.Equals(b) ?? b is null;
         public static bool operator !=(TensorShape? a, TensorShape? b) => !(a == b);
     }
