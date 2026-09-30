@@ -119,7 +119,46 @@ namespace ZeroTensor.Core
                     {
                         int nEnd = Math.Min(n0 + BlockN, n);
 
-                        for (int i = m0; i < mEnd; i++)
+                        int i = m0;
+                        for (; i <= mEnd - 2; i += 2)
+                        {
+                            int rowOffA0 = offA + i * sA0;
+                            int rowOffA1 = offA + (i + 1) * sA0;
+                            int rowOffC0 = offC + i * sC0;
+                            int rowOffC1 = offC + (i + 1) * sC0;
+
+                            for (int p = k0; p < kEnd; p++)
+                            {
+                                double a0 = bufA[rowOffA0 + p * sA1] * alpha;
+                                double a1 = bufA[rowOffA1 + p * sA1] * alpha;
+                                if (a0 == 0.0 && a1 == 0.0) continue;
+
+                                var vA0 = new Vector<double>(a0);
+                                var vA1 = new Vector<double>(a1);
+                                int rowOffB = offB + p * sB0;
+
+                                int j = n0;
+                                for (; j <= nEnd - vecSize; j += vecSize)
+                                {
+                                    var vB = new Vector<double>(bufB, rowOffB + j * sB1);
+                                    var vC0 = new Vector<double>(bufC, rowOffC0 + j * sC1);
+                                    var vC1 = new Vector<double>(bufC, rowOffC1 + j * sC1);
+
+                                    (vC0 + vA0 * vB).CopyTo(bufC, rowOffC0 + j * sC1);
+                                    (vC1 + vA1 * vB).CopyTo(bufC, rowOffC1 + j * sC1);
+                                }
+
+                                for (; j < nEnd; j++)
+                                {
+                                    double bVal = bufB[rowOffB + j * sB1];
+                                    bufC[rowOffC0 + j * sC1] += a0 * bVal;
+                                    bufC[rowOffC1 + j * sC1] += a1 * bVal;
+                                }
+                            }
+                        }
+
+                        // Tail cleanup for remaining odd row
+                        for (; i < mEnd; i++)
                         {
                             int rowOffA = offA + i * sA0;
                             int rowOffC = offC + i * sC0;

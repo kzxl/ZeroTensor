@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![.NET Multi-Targeting](https://img.shields.io/badge/.NET-8.0%20%7C%204.6.2%20%7C%20Standard%202.0-purple.svg)](https://dotnet.microsoft.com/)
 [![Zero External Dependencies](https://img.shields.io/badge/Dependencies-0%20(Pure%20C%23)-brightgreen.svg)]()
-[![NuGet Version](https://img.shields.io/badge/NuGet-1.0.0-blue.svg)](https://www.nuget.org/packages/ZeroTensor.Core)
+[![NuGet Version](https://img.shields.io/badge/NuGet-1.3.0-blue.svg)](https://www.nuget.org/packages/ZeroTensor.Core)
 
 **ZeroTensor** is an ultra-high-performance, multidimensional strided tensor computing library for .NET with **zero external dependencies**. Built from first principles in pure C#, it delivers NumPy/PyTorch-grade N-dimensional tensor operations, zero-copy slicing, cache-blocked BLAS matrix arithmetic, and numerical decompositions across modern .NET and legacy .NET Framework platforms.
 
@@ -14,13 +14,15 @@
 
 - **Pure C# / Zero Dependencies**: No native C++ wrappers, no Python runtimes, no MKL or OpenBLAS shared library setup. Copy and run anywhere.
 - **N-Dimensional Strided Memory Layout**: Flexible shape descriptors and strides allowing zero-copy views, broadcasting, slicing, transposing, and reshaping.
-- **Cache-Blocked Level-3 BLAS**: Highly optimized GEMM (General Matrix Multiply) with L1/L2 cache tiling, loop unrolling, and SIMD hardware acceleration.
+- **Zero-GC Memory Pooling (`TensorPool`)**: Rent and recycle tensor memory buffers with `using var t = Tensor.Rent<float>(shape)` backed by `ArrayPool<T>.Shared` to eliminate GC pauses in hot inference loops.
+- **In-Place SIMD Vector Operations**: High-throughput vectorized in-place mutators (`Add_`, `Subtract_`, `Multiply_`, `Divide_`, `Relu_`, `Clamp_`) and destination buffer overloads.
+- **Cache-Blocked Level-3 BLAS & INT8 GEMM**: Highly optimized FP32/FP64 GEMM with register and L1/L2 cache tiling, plus quantized INT8 matrix multiplication (`GemmInt8`) with zero-point offset and FP32 scaling.
 - **Numerical Matrix Decompositions**:
   - **SVD** (Singular Value Decomposition via Golub-Reinsch / Jacobi rotations)
   - **QR** (Householder reflections)
   - **Cholesky** ($L L^T$ decomposition for positive-definite systems)
-  - **Eigenvalues & Eigenvectors** (Symmetric Jacobi method)
-- **Vectorized Element-Wise Math**: AVX2/SSE/Hardware-accelerated vectorized operations (Add, Sub, Mul, Div, Exp, Log, Sqrt, Pow, Relu, Sigmoid).
+  - **Eigenvalues & Eigenvectors** (Symmetric Jacobi method `Eigh`)
+  - **Moore-Penrose Pseudoinverse** (`Pinverse`)
 - **Multi-Targeting**: Seamlessly compiles and runs on `.NET 8.0+`, `.NET Framework 4.6.2+`, and `.NET Standard 2.0`.
 
 ---
@@ -83,6 +85,19 @@ var matrix = Tensor.Create<double>(new[] { 3, 3 }, new double[]
 TensorDecompositions.Svd(matrix, out var u, out var s, out var vt);
 
 Console.WriteLine($"Top Singular Value: {s[0]:F4}");
+```
+
+### 4. Zero-GC Memory Rental & In-Place Operations
+```csharp
+// Rent tensor buffer from ArrayPool.Shared (0 GC allocations in loops)
+using var rented = Tensor.Rent<float>(128, 128);
+
+// Access and mutate directly
+rented[0, 0] = 1.0f;
+
+// High-speed in-place SIMD operations without allocating new tensors
+rented.Tensor.AddScalar_(5.0f);
+rented.Tensor.Relu_();
 ```
 
 ---

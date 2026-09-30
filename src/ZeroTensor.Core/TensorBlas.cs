@@ -136,8 +136,47 @@ namespace ZeroTensor.Core
                     {
                         int nEnd = Math.Min(n0 + BlockN, n);
 
-                        // Inner micro-kernel
-                        for (int i = m0; i < mEnd; i++)
+                        // 2-row register-tiled inner micro-kernel
+                        int i = m0;
+                        for (; i <= mEnd - 2; i += 2)
+                        {
+                            int rowOffA0 = offA + i * sA0;
+                            int rowOffA1 = offA + (i + 1) * sA0;
+                            int rowOffC0 = offC + i * sC0;
+                            int rowOffC1 = offC + (i + 1) * sC0;
+
+                            for (int p = k0; p < kEnd; p++)
+                            {
+                                float a0 = bufA[rowOffA0 + p * sA1] * alpha;
+                                float a1 = bufA[rowOffA1 + p * sA1] * alpha;
+                                if (a0 == 0f && a1 == 0f) continue;
+
+                                var vA0 = new Vector<float>(a0);
+                                var vA1 = new Vector<float>(a1);
+                                int rowOffB = offB + p * sB0;
+
+                                int j = n0;
+                                for (; j <= nEnd - vecSize; j += vecSize)
+                                {
+                                    var vB = new Vector<float>(bufB, rowOffB + j * sB1);
+                                    var vC0 = new Vector<float>(bufC, rowOffC0 + j * sC1);
+                                    var vC1 = new Vector<float>(bufC, rowOffC1 + j * sC1);
+
+                                    (vC0 + vA0 * vB).CopyTo(bufC, rowOffC0 + j * sC1);
+                                    (vC1 + vA1 * vB).CopyTo(bufC, rowOffC1 + j * sC1);
+                                }
+
+                                for (; j < nEnd; j++)
+                                {
+                                    float bVal = bufB[rowOffB + j * sB1];
+                                    bufC[rowOffC0 + j * sC1] += a0 * bVal;
+                                    bufC[rowOffC1 + j * sC1] += a1 * bVal;
+                                }
+                            }
+                        }
+
+                        // Tail cleanup for remaining odd row
+                        for (; i < mEnd; i++)
                         {
                             int rowOffA = offA + i * sA0;
                             int rowOffC = offC + i * sC0;
@@ -151,7 +190,6 @@ namespace ZeroTensor.Core
                                 int rowOffB = offB + p * sB0;
 
                                 int j = n0;
-                                // SIMD vector loop along contiguous N dimension
                                 for (; j <= nEnd - vecSize; j += vecSize)
                                 {
                                     var vB = new Vector<float>(bufB, rowOffB + j * sB1);
@@ -159,7 +197,6 @@ namespace ZeroTensor.Core
                                     (vC + vA * vB).CopyTo(bufC, rowOffC + j * sC1);
                                 }
 
-                                // Scalar cleanup
                                 for (; j < nEnd; j++)
                                 {
                                     bufC[rowOffC + j * sC1] += aVal * bufB[rowOffB + j * sB1];
