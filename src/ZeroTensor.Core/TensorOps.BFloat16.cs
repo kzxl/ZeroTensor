@@ -11,22 +11,22 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Converts a single-precision float tensor to a Brain Floating Point (BFloat16) tensor.
         /// </summary>
-        public static Tensor<BFloat16> ToBFloat16(this Tensor<float> tensor)
+        public static unsafe Tensor<BFloat16> ToBFloat16(this Tensor<float> tensor)
         {
             if (tensor == null) throw new ArgumentNullException(nameof(tensor));
 
             var result = new Tensor<BFloat16>(tensor.Shape);
-            var src = tensor.Buffer;
-            var dst = result.Buffer;
             int length = tensor.Length;
-            int srcOff = tensor.Offset;
-            int dstOff = result.Offset;
 
             if (tensor.IsContiguous)
             {
-                for (int i = 0; i < length; i++)
+                fixed (float* pSrc = &tensor.Storage.GetPinnableReference(tensor.Offset))
+                fixed (BFloat16* pDst = &result.Storage.GetPinnableReference(result.Offset))
                 {
-                    dst[dstOff + i] = (BFloat16)src[srcOff + i];
+                    for (int i = 0; i < length; i++)
+                    {
+                        pDst[i] = (BFloat16)pSrc[i];
+                    }
                 }
             }
             else
@@ -43,22 +43,22 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Converts a BFloat16 tensor to a single-precision float tensor.
         /// </summary>
-        public static Tensor<float> ToFloat(this Tensor<BFloat16> tensor)
+        public static unsafe Tensor<float> ToFloat(this Tensor<BFloat16> tensor)
         {
             if (tensor == null) throw new ArgumentNullException(nameof(tensor));
 
             var result = new Tensor<float>(tensor.Shape);
-            var src = tensor.Buffer;
-            var dst = result.Buffer;
             int length = tensor.Length;
-            int srcOff = tensor.Offset;
-            int dstOff = result.Offset;
 
             if (tensor.IsContiguous)
             {
-                for (int i = 0; i < length; i++)
+                fixed (BFloat16* pSrc = &tensor.Storage.GetPinnableReference(tensor.Offset))
+                fixed (float* pDst = &result.Storage.GetPinnableReference(result.Offset))
                 {
-                    dst[dstOff + i] = (float)src[srcOff + i];
+                    for (int i = 0; i < length; i++)
+                    {
+                        pDst[i] = (float)pSrc[i];
+                    }
                 }
             }
             else
@@ -75,22 +75,22 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Converts an FP16 Half tensor to a BFloat16 tensor.
         /// </summary>
-        public static Tensor<BFloat16> ToBFloat16(this Tensor<Half> tensor)
+        public static unsafe Tensor<BFloat16> ToBFloat16(this Tensor<Half> tensor)
         {
             if (tensor == null) throw new ArgumentNullException(nameof(tensor));
 
             var result = new Tensor<BFloat16>(tensor.Shape);
-            var src = tensor.Buffer;
-            var dst = result.Buffer;
             int length = tensor.Length;
-            int srcOff = tensor.Offset;
-            int dstOff = result.Offset;
 
             if (tensor.IsContiguous)
             {
-                for (int i = 0; i < length; i++)
+                fixed (Half* pSrc = &tensor.Storage.GetPinnableReference(tensor.Offset))
+                fixed (BFloat16* pDst = &result.Storage.GetPinnableReference(result.Offset))
                 {
-                    dst[dstOff + i] = (BFloat16)src[srcOff + i];
+                    for (int i = 0; i < length; i++)
+                    {
+                        pDst[i] = (BFloat16)pSrc[i];
+                    }
                 }
             }
             else
@@ -108,22 +108,20 @@ namespace ZeroTensor.Core
 
         #region BFloat16 Binary Arithmetic
 
-        internal static Tensor<BFloat16> AddBFloat16(Tensor<BFloat16> a, Tensor<BFloat16> b)
+        internal static unsafe Tensor<BFloat16> AddBFloat16(Tensor<BFloat16> a, Tensor<BFloat16> b)
         {
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
                 var result = new Tensor<BFloat16>(a.Shape);
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                var bufRes = result.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
-                int offRes = result.Offset;
                 int length = a.Length;
-
-                for (int i = 0; i < length; i++)
+                fixed (BFloat16* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (BFloat16* pB = &b.Storage.GetPinnableReference(b.Offset))
+                fixed (BFloat16* pRes = &result.Storage.GetPinnableReference(result.Offset))
                 {
-                    bufRes[offRes + i] = (BFloat16)((float)bufA[offA + i] + (float)bufB[offB + i]);
+                    for (int i = 0; i < length; i++)
+                    {
+                        pRes[i] = (BFloat16)((float)pA[i] + (float)pB[i]);
+                    }
                 }
                 return result;
             }
@@ -131,22 +129,20 @@ namespace ZeroTensor.Core
             return TensorBroadcaster.ApplyGeneric(a, b, (x, y) => (BFloat16)((float)x + (float)y));
         }
 
-        internal static Tensor<BFloat16> SubtractBFloat16(Tensor<BFloat16> a, Tensor<BFloat16> b)
+        internal static unsafe Tensor<BFloat16> SubtractBFloat16(Tensor<BFloat16> a, Tensor<BFloat16> b)
         {
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
                 var result = new Tensor<BFloat16>(a.Shape);
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                var bufRes = result.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
-                int offRes = result.Offset;
                 int length = a.Length;
-
-                for (int i = 0; i < length; i++)
+                fixed (BFloat16* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (BFloat16* pB = &b.Storage.GetPinnableReference(b.Offset))
+                fixed (BFloat16* pRes = &result.Storage.GetPinnableReference(result.Offset))
                 {
-                    bufRes[offRes + i] = (BFloat16)((float)bufA[offA + i] - (float)bufB[offB + i]);
+                    for (int i = 0; i < length; i++)
+                    {
+                        pRes[i] = (BFloat16)((float)pA[i] - (float)pB[i]);
+                    }
                 }
                 return result;
             }
@@ -154,22 +150,20 @@ namespace ZeroTensor.Core
             return TensorBroadcaster.ApplyGeneric(a, b, (x, y) => (BFloat16)((float)x - (float)y));
         }
 
-        internal static Tensor<BFloat16> MultiplyBFloat16(Tensor<BFloat16> a, Tensor<BFloat16> b)
+        internal static unsafe Tensor<BFloat16> MultiplyBFloat16(Tensor<BFloat16> a, Tensor<BFloat16> b)
         {
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
                 var result = new Tensor<BFloat16>(a.Shape);
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                var bufRes = result.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
-                int offRes = result.Offset;
                 int length = a.Length;
-
-                for (int i = 0; i < length; i++)
+                fixed (BFloat16* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (BFloat16* pB = &b.Storage.GetPinnableReference(b.Offset))
+                fixed (BFloat16* pRes = &result.Storage.GetPinnableReference(result.Offset))
                 {
-                    bufRes[offRes + i] = (BFloat16)((float)bufA[offA + i] * (float)bufB[offB + i]);
+                    for (int i = 0; i < length; i++)
+                    {
+                        pRes[i] = (BFloat16)((float)pA[i] * (float)pB[i]);
+                    }
                 }
                 return result;
             }
@@ -177,22 +171,20 @@ namespace ZeroTensor.Core
             return TensorBroadcaster.ApplyGeneric(a, b, (x, y) => (BFloat16)((float)x * (float)y));
         }
 
-        internal static Tensor<BFloat16> DivideBFloat16(Tensor<BFloat16> a, Tensor<BFloat16> b)
+        internal static unsafe Tensor<BFloat16> DivideBFloat16(Tensor<BFloat16> a, Tensor<BFloat16> b)
         {
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
                 var result = new Tensor<BFloat16>(a.Shape);
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                var bufRes = result.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
-                int offRes = result.Offset;
                 int length = a.Length;
-
-                for (int i = 0; i < length; i++)
+                fixed (BFloat16* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (BFloat16* pB = &b.Storage.GetPinnableReference(b.Offset))
+                fixed (BFloat16* pRes = &result.Storage.GetPinnableReference(result.Offset))
                 {
-                    bufRes[offRes + i] = (BFloat16)((float)bufA[offA + i] / (float)bufB[offB + i]);
+                    for (int i = 0; i < length; i++)
+                    {
+                        pRes[i] = (BFloat16)((float)pA[i] / (float)pB[i]);
+                    }
                 }
                 return result;
             }
@@ -200,20 +192,20 @@ namespace ZeroTensor.Core
             return TensorBroadcaster.ApplyGeneric(a, b, (x, y) => (BFloat16)((float)x / (float)y));
         }
 
-        internal static Tensor<BFloat16> NegateBFloat16(Tensor<BFloat16> a)
+        internal static unsafe Tensor<BFloat16> NegateBFloat16(Tensor<BFloat16> a)
         {
             var result = new Tensor<BFloat16>(a.Shape);
-            var bufA = a.Buffer;
-            var bufRes = result.Buffer;
-            int offA = a.Offset;
-            int offRes = result.Offset;
             int length = a.Length;
 
             if (a.IsContiguous)
             {
-                for (int i = 0; i < length; i++)
+                fixed (BFloat16* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (BFloat16* pRes = &result.Storage.GetPinnableReference(result.Offset))
                 {
-                    bufRes[offRes + i] = (BFloat16)(-(float)bufA[offA + i]);
+                    for (int i = 0; i < length; i++)
+                    {
+                        pRes[i] = (BFloat16)(-(float)pA[i]);
+                    }
                 }
                 return result;
             }
@@ -229,21 +221,21 @@ namespace ZeroTensor.Core
 
         #region BFloat16 Activations & Reductions
 
-        public static Tensor<BFloat16> ReLUBFloat16(Tensor<BFloat16> a)
+        public static unsafe Tensor<BFloat16> ReLUBFloat16(Tensor<BFloat16> a)
         {
             var result = new Tensor<BFloat16>(a.Shape);
-            var bufA = a.Buffer;
-            var bufRes = result.Buffer;
-            int offA = a.Offset;
-            int offRes = result.Offset;
             int length = a.Length;
 
             if (a.IsContiguous)
             {
-                for (int i = 0; i < length; i++)
+                fixed (BFloat16* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (BFloat16* pRes = &result.Storage.GetPinnableReference(result.Offset))
                 {
-                    float v = (float)bufA[offA + i];
-                    bufRes[offRes + i] = (BFloat16)(v > 0f ? v : 0f);
+                    for (int i = 0; i < length; i++)
+                    {
+                        float v = (float)pA[i];
+                        pRes[i] = (BFloat16)(v > 0f ? v : 0f);
+                    }
                 }
                 return result;
             }
@@ -256,16 +248,17 @@ namespace ZeroTensor.Core
             return result;
         }
 
-        public static BFloat16 SumBFloat16(Tensor<BFloat16> a)
+        public static unsafe BFloat16 SumBFloat16(Tensor<BFloat16> a)
         {
             float acc = 0f;
-            var buf = a.Buffer;
-            int off = a.Offset;
             int len = a.Length;
 
             if (a.IsContiguous)
             {
-                for (int i = 0; i < len; i++) acc += (float)buf[off + i];
+                fixed (BFloat16* p = &a.Storage.GetPinnableReference(a.Offset))
+                {
+                    for (int i = 0; i < len; i++) acc += (float)p[i];
+                }
                 return (BFloat16)acc;
             }
 
@@ -280,8 +273,9 @@ namespace ZeroTensor.Core
     {
         /// <summary>
         /// Cache-tiled matrix multiplication for BFloat16 tensors with FP32 register accumulation: C = A @ B.
+        /// Fully zero-copy on unmanaged and memory-mapped pointers.
         /// </summary>
-        public static Tensor<BFloat16> MatMul(Tensor<BFloat16> a, Tensor<BFloat16> b)
+        public static unsafe Tensor<BFloat16> MatMul(Tensor<BFloat16> a, Tensor<BFloat16> b)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
@@ -300,10 +294,6 @@ namespace ZeroTensor.Core
             int k = kA;
             var c = new Tensor<BFloat16>(m, n);
 
-            var aBuf = a.Buffer;
-            var bBuf = b.Buffer;
-            var cBuf = c.Buffer;
-
             int aStride0 = a.Strides[0], aStride1 = a.Strides[1];
             int bStride0 = b.Strides[0], bStride1 = b.Strides[1];
             int cStride0 = c.Strides[0], cStride1 = c.Strides[1];
@@ -318,72 +308,85 @@ namespace ZeroTensor.Core
 
             int numBlocksM = (m + bm - 1) / bm;
 
-            if (m * n >= 4096)
+            fixed (BFloat16* pA = &a.Storage.GetPinnableReference(0))
+            fixed (BFloat16* pB = &b.Storage.GetPinnableReference(0))
+            fixed (BFloat16* pC = &c.Storage.GetPinnableReference(0))
             {
-                Parallel.For(0, numBlocksM, blockMIdx =>
+                IntPtr ptrA = (IntPtr)pA;
+                IntPtr ptrB = (IntPtr)pB;
+                IntPtr ptrC = (IntPtr)pC;
+
+                if (m * n >= 4096)
                 {
-                    int iStart = blockMIdx * bm;
-                    int iEnd = Math.Min(iStart + bm, m);
-
-                    for (int jStart = 0; jStart < n; jStart += bn)
+                    Parallel.For(0, numBlocksM, blockMIdx =>
                     {
-                        int jEnd = Math.Min(jStart + bn, n);
+                        BFloat16* localA = (BFloat16*)ptrA;
+                        BFloat16* localB = (BFloat16*)ptrB;
+                        BFloat16* localC = (BFloat16*)ptrC;
 
-                        for (int lStart = 0; lStart < k; lStart += bk)
+                        int iStart = blockMIdx * bm;
+                        int iEnd = Math.Min(iStart + bm, m);
+
+                        for (int jStart = 0; jStart < n; jStart += bn)
                         {
-                            int lEnd = Math.Min(lStart + bk, k);
+                            int jEnd = Math.Min(jStart + bn, n);
 
-                            for (int i = iStart; i < iEnd; i++)
+                            for (int lStart = 0; lStart < k; lStart += bk)
                             {
-                                int aRowBase = aOff + i * aStride0;
-                                int cRowBase = cOff + i * cStride0;
+                                int lEnd = Math.Min(lStart + bk, k);
 
-                                for (int l = lStart; l < lEnd; l++)
+                                for (int i = iStart; i < iEnd; i++)
                                 {
-                                    float aVal = (float)aBuf[aRowBase + l * aStride1];
-                                    int bRowBase = bOff + l * bStride0;
+                                    int aRowBase = aOff + i * aStride0;
+                                    int cRowBase = cOff + i * cStride0;
 
-                                    for (int j = jStart; j < jEnd; j++)
+                                    for (int l = lStart; l < lEnd; l++)
                                     {
-                                        int cIdx = cRowBase + j * cStride1;
-                                        float current = (float)cBuf[cIdx];
-                                        cBuf[cIdx] = (BFloat16)(current + aVal * (float)bBuf[bRowBase + j * bStride1]);
+                                        float aVal = (float)localA[aRowBase + l * aStride1];
+                                        int bRowBase = bOff + l * bStride0;
+
+                                        for (int j = jStart; j < jEnd; j++)
+                                        {
+                                            int cIdx = cRowBase + j * cStride1;
+                                            float current = (float)localC[cIdx];
+                                            localC[cIdx] = (BFloat16)(current + aVal * (float)localB[bRowBase + j * bStride1]);
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                });
-            }
-            else
-            {
-                for (int iStart = 0; iStart < m; iStart += bm)
+                    });
+                }
+                else
                 {
-                    int iEnd = Math.Min(iStart + bm, m);
-
-                    for (int jStart = 0; jStart < n; jStart += bn)
+                    for (int iStart = 0; iStart < m; iStart += bm)
                     {
-                        int jEnd = Math.Min(jStart + bn, n);
+                        int iEnd = Math.Min(iStart + bm, m);
 
-                        for (int lStart = 0; lStart < k; lStart += bk)
+                        for (int jStart = 0; jStart < n; jStart += bn)
                         {
-                            int lEnd = Math.Min(lStart + bk, k);
+                            int jEnd = Math.Min(jStart + bn, n);
 
-                            for (int i = iStart; i < iEnd; i++)
+                            for (int lStart = 0; lStart < k; lStart += bk)
                             {
-                                int aRowBase = aOff + i * aStride0;
-                                int cRowBase = cOff + i * cStride0;
+                                int lEnd = Math.Min(lStart + bk, k);
 
-                                for (int l = lStart; l < lEnd; l++)
+                                for (int i = iStart; i < iEnd; i++)
                                 {
-                                    float aVal = (float)aBuf[aRowBase + l * aStride1];
-                                    int bRowBase = bOff + l * bStride0;
+                                    int aRowBase = aOff + i * aStride0;
+                                    int cRowBase = cOff + i * cStride0;
 
-                                    for (int j = jStart; j < jEnd; j++)
+                                    for (int l = lStart; l < lEnd; l++)
                                     {
-                                        int cIdx = cRowBase + j * cStride1;
-                                        float current = (float)cBuf[cIdx];
-                                        cBuf[cIdx] = (BFloat16)(current + aVal * (float)bBuf[bRowBase + j * bStride1]);
+                                        float aVal = (float)pA[aRowBase + l * aStride1];
+                                        int bRowBase = bOff + l * bStride0;
+
+                                        for (int j = jStart; j < jEnd; j++)
+                                        {
+                                            int cIdx = cRowBase + j * cStride1;
+                                            float current = (float)pC[cIdx];
+                                            pC[cIdx] = (BFloat16)(current + aVal * (float)pB[bRowBase + j * bStride1]);
+                                        }
                                     }
                                 }
                             }

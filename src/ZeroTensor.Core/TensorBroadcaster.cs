@@ -223,7 +223,7 @@ namespace ZeroTensor.Core
             return outTensor;
         }
 
-        private static void ApplyBroadcastedFloat(
+        private static unsafe void ApplyBroadcastedFloat(
             Tensor<float> a,
             Tensor<float> b,
             Tensor<float> result,
@@ -234,77 +234,78 @@ namespace ZeroTensor.Core
             var shape = result.Shape;
             int rank = shape.Rank;
 
-            var bufA = a.Buffer;
-            var bufB = b.Buffer;
-            var bufOut = result.Buffer;
-
             int offA = a.Offset;
             int offB = b.Offset;
             int offOut = result.Offset;
             var stridesOut = result.Strides;
 
-            if (rank == 1)
+            fixed (float* pA = &a.Storage.GetPinnableReference(0))
+            fixed (float* pB = &b.Storage.GetPinnableReference(0))
+            fixed (float* pOut = &result.Storage.GetPinnableReference(0))
             {
-                int len = shape[0];
-                int sA = stridesA[0], sB = stridesB[0], sOut = stridesOut[0];
-
-                for (int i = 0; i < len; i++)
+                if (rank == 1)
                 {
-                    bufOut[offOut + i * sOut] = op(bufA[offA + i * sA], bufB[offB + i * sB]);
-                }
-            }
-            else if (rank == 2)
-            {
-                int rMax = shape[0];
-                int cMax = shape[1];
+                    int len = shape[0];
+                    int sA = stridesA[0], sB = stridesB[0], sOut = stridesOut[0];
 
-                int sA0 = stridesA[0], sA1 = stridesA[1];
-                int sB0 = stridesB[0], sB1 = stridesB[1];
-                int sOut0 = stridesOut[0], sOut1 = stridesOut[1];
-
-                for (int r = 0; r < rMax; r++)
-                {
-                    int rowOffA = offA + r * sA0;
-                    int rowOffB = offB + r * sB0;
-                    int rowOffOut = offOut + r * sOut0;
-
-                    for (int c = 0; c < cMax; c++)
+                    for (int i = 0; i < len; i++)
                     {
-                        bufOut[rowOffOut + c * sOut1] = op(bufA[rowOffA + c * sA1], bufB[rowOffB + c * sB1]);
+                        pOut[offOut + i * sOut] = op(pA[offA + i * sA], pB[offB + i * sB]);
                     }
                 }
-            }
-            else
-            {
-                int total = shape.TotalElements;
-                var coords = new int[rank];
-
-                for (int idx = 0; idx < total; idx++)
+                else if (rank == 2)
                 {
-                    int flatA = offA;
-                    int flatB = offB;
-                    int flatOut = offOut;
+                    int rMax = shape[0];
+                    int cMax = shape[1];
 
-                    for (int d = 0; d < rank; d++)
+                    int sA0 = stridesA[0], sA1 = stridesA[1];
+                    int sB0 = stridesB[0], sB1 = stridesB[1];
+                    int sOut0 = stridesOut[0], sOut1 = stridesOut[1];
+
+                    for (int r = 0; r < rMax; r++)
                     {
-                        flatA += coords[d] * stridesA[d];
-                        flatB += coords[d] * stridesB[d];
-                        flatOut += coords[d] * stridesOut[d];
+                        int rowOffA = offA + r * sA0;
+                        int rowOffB = offB + r * sB0;
+                        int rowOffOut = offOut + r * sOut0;
+
+                        for (int c = 0; c < cMax; c++)
+                        {
+                            pOut[rowOffOut + c * sOut1] = op(pA[rowOffA + c * sA1], pB[rowOffB + c * sB1]);
+                        }
                     }
+                }
+                else
+                {
+                    int total = shape.TotalElements;
+                    var coords = new int[rank];
 
-                    bufOut[flatOut] = op(bufA[flatA], bufB[flatB]);
-
-                    for (int d = rank - 1; d >= 0; d--)
+                    for (int idx = 0; idx < total; idx++)
                     {
-                        coords[d]++;
-                        if (coords[d] < shape[d]) break;
-                        coords[d] = 0;
+                        int flatA = offA;
+                        int flatB = offB;
+                        int flatOut = offOut;
+
+                        for (int d = 0; d < rank; d++)
+                        {
+                            flatA += coords[d] * stridesA[d];
+                            flatB += coords[d] * stridesB[d];
+                            flatOut += coords[d] * stridesOut[d];
+                        }
+
+                        pOut[flatOut] = op(pA[flatA], pB[flatB]);
+
+                        for (int d = rank - 1; d >= 0; d--)
+                        {
+                            coords[d]++;
+                            if (coords[d] < shape[d]) break;
+                            coords[d] = 0;
+                        }
                     }
                 }
             }
         }
 
-        private static void ApplyBroadcastedDouble(
+        private static unsafe void ApplyBroadcastedDouble(
             Tensor<double> a,
             Tensor<double> b,
             Tensor<double> result,
@@ -315,71 +316,72 @@ namespace ZeroTensor.Core
             var shape = result.Shape;
             int rank = shape.Rank;
 
-            var bufA = a.Buffer;
-            var bufB = b.Buffer;
-            var bufOut = result.Buffer;
-
             int offA = a.Offset;
             int offB = b.Offset;
             int offOut = result.Offset;
             var stridesOut = result.Strides;
 
-            if (rank == 1)
+            fixed (double* pA = &a.Storage.GetPinnableReference(0))
+            fixed (double* pB = &b.Storage.GetPinnableReference(0))
+            fixed (double* pOut = &result.Storage.GetPinnableReference(0))
             {
-                int len = shape[0];
-                int sA = stridesA[0], sB = stridesB[0], sOut = stridesOut[0];
-
-                for (int i = 0; i < len; i++)
+                if (rank == 1)
                 {
-                    bufOut[offOut + i * sOut] = op(bufA[offA + i * sA], bufB[offB + i * sB]);
-                }
-            }
-            else if (rank == 2)
-            {
-                int rMax = shape[0];
-                int cMax = shape[1];
+                    int len = shape[0];
+                    int sA = stridesA[0], sB = stridesB[0], sOut = stridesOut[0];
 
-                int sA0 = stridesA[0], sA1 = stridesA[1];
-                int sB0 = stridesB[0], sB1 = stridesB[1];
-                int sOut0 = stridesOut[0], sOut1 = stridesOut[1];
-
-                for (int r = 0; r < rMax; r++)
-                {
-                    int rowOffA = offA + r * sA0;
-                    int rowOffB = offB + r * sB0;
-                    int rowOffOut = offOut + r * sOut0;
-
-                    for (int c = 0; c < cMax; c++)
+                    for (int i = 0; i < len; i++)
                     {
-                        bufOut[rowOffOut + c * sOut1] = op(bufA[rowOffA + c * sA1], bufB[rowOffB + c * sB1]);
+                        pOut[offOut + i * sOut] = op(pA[offA + i * sA], pB[offB + i * sB]);
                     }
                 }
-            }
-            else
-            {
-                int total = shape.TotalElements;
-                var coords = new int[rank];
-
-                for (int idx = 0; idx < total; idx++)
+                else if (rank == 2)
                 {
-                    int flatA = offA;
-                    int flatB = offB;
-                    int flatOut = offOut;
+                    int rMax = shape[0];
+                    int cMax = shape[1];
 
-                    for (int d = 0; d < rank; d++)
+                    int sA0 = stridesA[0], sA1 = stridesA[1];
+                    int sB0 = stridesB[0], sB1 = stridesB[1];
+                    int sOut0 = stridesOut[0], sOut1 = stridesOut[1];
+
+                    for (int r = 0; r < rMax; r++)
                     {
-                        flatA += coords[d] * stridesA[d];
-                        flatB += coords[d] * stridesB[d];
-                        flatOut += coords[d] * stridesOut[d];
+                        int rowOffA = offA + r * sA0;
+                        int rowOffB = offB + r * sB0;
+                        int rowOffOut = offOut + r * sOut0;
+
+                        for (int c = 0; c < cMax; c++)
+                        {
+                            pOut[rowOffOut + c * sOut1] = op(pA[rowOffA + c * sA1], pB[rowOffB + c * sB1]);
+                        }
                     }
+                }
+                else
+                {
+                    int total = shape.TotalElements;
+                    var coords = new int[rank];
 
-                    bufOut[flatOut] = op(bufA[flatA], bufB[flatB]);
-
-                    for (int d = rank - 1; d >= 0; d--)
+                    for (int idx = 0; idx < total; idx++)
                     {
-                        coords[d]++;
-                        if (coords[d] < shape[d]) break;
-                        coords[d] = 0;
+                        int flatA = offA;
+                        int flatB = offB;
+                        int flatOut = offOut;
+
+                        for (int d = 0; d < rank; d++)
+                        {
+                            flatA += coords[d] * stridesA[d];
+                            flatB += coords[d] * stridesB[d];
+                            flatOut += coords[d] * stridesOut[d];
+                        }
+
+                        pOut[flatOut] = op(pA[flatA], pB[flatB]);
+
+                        for (int d = rank - 1; d >= 0; d--)
+                        {
+                            coords[d]++;
+                            if (coords[d] < shape[d]) break;
+                            coords[d] = 0;
+                        }
                     }
                 }
             }
