@@ -166,6 +166,72 @@ namespace ZeroTensor.Core
 
         #endregion
 
+        #region Memory-Mapped Zero-Copy Loading
+
+        /// <summary>
+        /// Opens a Safetensors file with true zero-copy OS memory-mapping.
+        /// Tensors are mapped directly from OS file cache into memory without heap allocation or copying.
+        /// </summary>
+        public static Dictionary<string, Tensor<T>> OpenMemoryMapped<T>(string filePath) where T : unmanaged, IEquatable<T>
+        {
+            if (string.IsNullOrEmpty(filePath)) throw new ArgumentNullException(nameof(filePath));
+            if (!File.Exists(filePath)) throw new FileNotFoundException("Safetensors file not found.", filePath);
+
+            ulong headerSize;
+            byte[] headerBytes;
+            using (var fs = new FileStream(filePath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var reader = new BinaryReader(fs, Encoding.UTF8))
+            {
+                headerSize = reader.ReadUInt64();
+                if (headerSize > int.MaxValue)
+                {
+                    throw new InvalidDataException($"Safetensors header size {headerSize} exceeds supported limits.");
+                }
+                headerBytes = reader.ReadBytes((int)headerSize);
+            }
+
+            string jsonHeader = Encoding.UTF8.GetString(headerBytes);
+            var infos = ParseSafetensorsHeader(jsonHeader);
+            long dataBaseOffset = 8 + (long)headerSize;
+
+            string expectedDtype = GetSafetensorsDtype<T>();
+            int elementSize = Marshal.SizeOf<T>();
+
+            var matchingInfos = new List<SafetensorsTensorInfo>();
+            foreach (var info in infos)
+            {
+                if (info.Dtype.Equals(expectedDtype, StringComparison.OrdinalIgnoreCase))
+                {
+                    matchingInfos.Add(info);
+                }
+            }
+
+            var mmf = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateFromFile(filePath, FileMode.Open, null, 0, System.IO.MemoryMappedFiles.MemoryMappedFileAccess.Read);
+            var lifetime = new SharedResourceHolder(mmf, Math.Max(matchingInfos.Count, 1));
+            var results = new Dictionary<string, Tensor<T>>(matchingInfos.Count);
+
+            foreach (var info in matchingInfos)
+            {
+                long byteStart = dataBaseOffset + info.StartOffset;
+                long byteCount = info.EndOffset - info.StartOffset;
+                int elementCount = (int)(byteCount / elementSize);
+
+                var storage = new Storage.MemoryMappedStorage<T>(mmf, byteStart, elementCount, ownsMmf: false, sharedLifetime: lifetime);
+                var shape = new TensorShape(info.Shape);
+                var strides = TensorStrides.ComputeContiguousStrides(shape);
+                results[info.Name] = new Tensor<T>(storage, 0, shape, strides);
+            }
+
+            return results;
+        }
+
+        /// <summary>
+        /// Opens all FP32 tensors from a Safetensors file with true zero-copy OS memory-mapping.
+        /// </summary>
+        public static Dictionary<string, Tensor<float>> OpenMemoryMapped(string filePath) => OpenMemoryMapped<float>(filePath);
+
+        #endregion
+
         #region Helpers
 
         private static string GetSafetensorsDtype<T>()
@@ -287,5 +353,25 @@ namespace ZeroTensor.Core
         }
 
         #endregion
+    }
+
+    internal sealed class SharedResourceHolder : IDisposable
+    {
+        private readonly IDisposable _resource;
+        private int _refCount;
+
+        public SharedResourceHolder(IDisposable resource, int initialRefCount)
+        {
+            _resource = resource ?? throw new ArgumentNullException(nameof(resource));
+            _refCount = initialRefCount;
+        }
+
+        public void Dispose()
+        {
+            if (System.Threading.Interlocked.Decrement(ref _refCount) == 0)
+            {
+                _resource.Dispose();
+            }
+        }
     }
 }

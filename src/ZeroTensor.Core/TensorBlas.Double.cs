@@ -243,20 +243,52 @@ namespace ZeroTensor.Core
             var result = new Tensor<double>(new TensorShape(outDims));
             int batchCount = outBatchShape.TotalElements;
 
+            // Broadcast to matching batch shapes without materializing non-contiguous buffers
             var aBroadcast = a.BroadcastTo(new TensorShape(CombineBatchAndMatrix(outBatchShape, m, kA)));
             var bBroadcast = b.BroadcastTo(new TensorShape(CombineBatchAndMatrix(outBatchShape, kB, n)));
 
-            var a3D = aBroadcast.Reshape(batchCount, m, kA);
-            var b3D = bBroadcast.Reshape(batchCount, kB, n);
-            var c3D = result.Reshape(batchCount, m, n);
+            var matShapeA = new TensorShape(m, kA);
+            var matStridesA = new[] { aBroadcast.Strides[aBroadcast.Rank - 2], aBroadcast.Strides[aBroadcast.Rank - 1] };
 
-            for (int bIdx = 0; bIdx < batchCount; bIdx++)
+            var matShapeB = new TensorShape(kB, n);
+            var matStridesB = new[] { bBroadcast.Strides[bBroadcast.Rank - 2], bBroadcast.Strides[bBroadcast.Rank - 1] };
+
+            var matShapeC = new TensorShape(m, n);
+            var matStridesC = new[] { result.Strides[result.Rank - 2], result.Strides[result.Rank - 1] };
+
+            int batchRank = outBatchShape.Rank;
+
+            void ComputeBatchSlice(int bIdx)
             {
-                var aSlice = a3D.SubTensor(bIdx);
-                var bSlice = b3D.SubTensor(bIdx);
-                var cSlice = c3D.SubTensor(bIdx);
+                int rem = bIdx;
+                int aSliceOffset = aBroadcast.Offset;
+                int bSliceOffset = bBroadcast.Offset;
+                int cSliceOffset = result.Offset;
+
+                for (int dim = batchRank - 1; dim >= 0; dim--)
+                {
+                    int dimSize = outBatchShape[dim];
+                    int coord = rem % dimSize;
+                    rem /= dimSize;
+                    aSliceOffset += coord * aBroadcast.Strides[dim];
+                    bSliceOffset += coord * bBroadcast.Strides[dim];
+                    cSliceOffset += coord * result.Strides[dim];
+                }
+
+                var aSlice = new Tensor<double>(aBroadcast.Storage, aSliceOffset, matShapeA, matStridesA);
+                var bSlice = new Tensor<double>(bBroadcast.Storage, bSliceOffset, matShapeB, matStridesB);
+                var cSlice = new Tensor<double>(result.Storage, cSliceOffset, matShapeC, matStridesC);
 
                 Gemm(aSlice, bSlice, cSlice);
+            }
+
+            if (batchCount > 1)
+            {
+                System.Threading.Tasks.Parallel.For(0, batchCount, ComputeBatchSlice);
+            }
+            else
+            {
+                ComputeBatchSlice(0);
             }
 
             return result;

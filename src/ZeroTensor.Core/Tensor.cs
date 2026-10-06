@@ -67,6 +67,14 @@ namespace ZeroTensor.Core
         }
 
         /// <summary>
+        /// Creates an O(1) zero-copy tensor view over any abstract ITensorStorage backend with custom offset, shape, and strides.
+        /// </summary>
+        public static Tensor<T> CreateView<T>(Storage.ITensorStorage<T> storage, int offset, TensorShape shape, int[] strides) where T : unmanaged, IEquatable<T>
+        {
+            return new Tensor<T>(storage, offset, shape, strides);
+        }
+
+        /// <summary>
         /// Creates a tensor by wrapping or copying a flat array into the specified shape.
         /// </summary>
         public static Tensor<T> FromArray<T>(T[] data, params int[] shape) where T : unmanaged, IEquatable<T>
@@ -273,7 +281,7 @@ namespace ZeroTensor.Core
         }
 
         /// <summary>
-        /// Creates a Tensor by copying elements from an unmanaged NativeMemoryBlock.
+        /// Creates a true zero-copy Tensor wrapping an unmanaged NativeMemoryBlock without GC heap allocations.
         /// </summary>
         public static unsafe Tensor<T> FromNativeBlock<T>(ZeroPrimitives.Memory.NativeMemoryBlock block, params int[] shape) where T : unmanaged, IEquatable<T>
         {
@@ -283,10 +291,22 @@ namespace ZeroTensor.Core
             if (block.Capacity < requiredBytes)
                 throw new ArgumentException($"Native block capacity ({block.Capacity} bytes) is smaller than required tensor size ({requiredBytes} bytes).", nameof(block));
 
-            var tensor = new Tensor<T>(tensorShape);
-            var srcSpan = new ReadOnlySpan<T>(block.Pointer, tensorShape.TotalElements);
-            srcSpan.CopyTo(tensor.AsSpan());
-            return tensor;
+            var storage = new Storage.NativeMemoryStorage<T>(block, 0, tensorShape.TotalElements);
+            var strides = TensorStrides.ComputeContiguousStrides(tensorShape);
+            return new Tensor<T>(storage, 0, tensorShape, strides);
+        }
+
+        /// <summary>
+        /// Creates a true zero-copy Tensor wrapping a raw unmanaged native pointer.
+        /// </summary>
+        public static unsafe Tensor<T> FromNativePointer<T>(T* pointer, TensorShape shape, bool ownsPointer = false) where T : unmanaged, IEquatable<T>
+        {
+            if (pointer == null) throw new ArgumentNullException(nameof(pointer));
+            if (shape == null) throw new ArgumentNullException(nameof(shape));
+
+            var storage = new Storage.NativeMemoryStorage<T>(pointer, shape.TotalElements, ownsPointer);
+            var strides = TensorStrides.ComputeContiguousStrides(shape);
+            return new Tensor<T>(storage, 0, shape, strides);
         }
 
         /// <summary>

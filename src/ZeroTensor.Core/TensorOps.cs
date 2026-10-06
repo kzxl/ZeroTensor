@@ -554,8 +554,28 @@ namespace ZeroTensor.Core
 
         public static Tensor<float> GELU(Tensor<float> t)
         {
+            var contig = t.IsContiguous ? t : t.ToContiguous();
+            var result = new Tensor<float>(contig.Shape);
+            int len = contig.Length;
             const float sqrt2OverPi = 0.7978845608f;
-            return ApplyUnary(t, x => 0.5f * x * (1.0f + (float)Math.Tanh(sqrt2OverPi * (x + 0.044715f * x * x * x))));
+            const float geluCoeff = 0.044715f;
+
+            System.Threading.Tasks.Parallel.For(0, (len + 1023) / 1024, chunkIdx =>
+            {
+                int start = chunkIdx * 1024;
+                int count = Math.Min(1024, len - start);
+                ref float pSrc = ref contig.Storage.GetPinnableReference(contig.Offset + start);
+                ref float pDst = ref result.Storage.GetPinnableReference(result.Offset + start);
+
+                for (int i = 0; i < count; i++)
+                {
+                    float val = System.Runtime.CompilerServices.Unsafe.Add(ref pSrc, i);
+                    float inner = sqrt2OverPi * (val + geluCoeff * val * val * val);
+                    System.Runtime.CompilerServices.Unsafe.Add(ref pDst, i) = 0.5f * val * (1.0f + (float)Math.Tanh(inner));
+                }
+            });
+
+            return result;
         }
 
         public static Tensor<float> Clamp(Tensor<float> t, float min, float max)
@@ -778,8 +798,11 @@ namespace ZeroTensor.Core
 
         /// <summary>
         /// Computes numerically stable softmax along the specified axis.
+        /// Uses high-speed fused single-pass SIMD kernel along the last axis.
         /// </summary>
-        public static Tensor<float> Softmax(Tensor<float> t, int axis = -1)
+        public static Tensor<float> Softmax(Tensor<float> t, int axis = -1) => SoftmaxFast(t, axis);
+
+        internal static Tensor<float> SoftmaxReduce(Tensor<float> t, int axis)
         {
             var maxVal = Max(t, axis, keepDims: true);
             var exp = Exp(t - maxVal);

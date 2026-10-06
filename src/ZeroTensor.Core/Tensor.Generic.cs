@@ -2,17 +2,19 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Text;
+using ZeroTensor.Core.Storage;
 
 namespace ZeroTensor.Core
 {
     /// <summary>
-    /// Represents an N-dimensional tensor backed by a contiguous memory buffer.
-    /// Supports zero-copy slicing, transposing, reshaping, and broadcasting views.
+    /// Represents an N-dimensional tensor backed by an abstract memory storage.
+    /// Supports zero-copy slicing, transposing, reshaping, broadcasting views,
+    /// and multiple storage backends (Managed array, Native unmanaged memory, Memory-Mapped file, GPU buffer).
     /// </summary>
     /// <typeparam name="T">Unmanaged scalar type (e.g. float, double, int, byte).</typeparam>
-    public class Tensor<T> : IEquatable<Tensor<T>> where T : unmanaged, IEquatable<T>
+    public class Tensor<T> : IEquatable<Tensor<T>>, IDisposable where T : unmanaged, IEquatable<T>
     {
-        private readonly T[] _buffer;
+        private readonly ITensorStorage<T> _storage;
         private readonly int _offset;
         private readonly TensorShape _shape;
         private readonly int[] _strides;
@@ -48,9 +50,19 @@ namespace ZeroTensor.Core
         public bool IsContiguous => TensorStrides.IsContiguous(_shape, _strides);
 
         /// <summary>
-        /// Internal accessor to the underlying flat buffer.
+        /// Gets the storage backend holding this tensor's memory.
         /// </summary>
-        internal T[] Buffer => _buffer;
+        public ITensorStorage<T> Storage => _storage;
+
+        /// <summary>
+        /// Gets the device domain where this tensor resides.
+        /// </summary>
+        public DeviceType Device => _storage.Device;
+
+        /// <summary>
+        /// Internal accessor to the underlying flat buffer if backed by a managed array, or materializes one.
+        /// </summary>
+        internal T[] Buffer => _storage.TryGetArray(out _) ?? ToArray();
 
         /// <summary>
         /// Initializes a new contiguous tensor of the specified shape.
@@ -58,7 +70,7 @@ namespace ZeroTensor.Core
         public Tensor(TensorShape shape)
         {
             _shape = shape ?? throw new ArgumentNullException(nameof(shape));
-            _buffer = new T[_shape.TotalElements];
+            _storage = new ManagedArrayStorage<T>(_shape.TotalElements);
             _offset = 0;
             _strides = TensorStrides.ComputeContiguousStrides(_shape);
         }
@@ -71,14 +83,22 @@ namespace ZeroTensor.Core
         }
 
         /// <summary>
-        /// Internal constructor for creating zero-copy views over existing buffer memory.
+        /// Initializes a tensor backed by custom storage with specified offset, shape, and strides.
         /// </summary>
-        internal Tensor(T[] buffer, int offset, TensorShape shape, int[] strides)
+        public Tensor(ITensorStorage<T> storage, int offset, TensorShape shape, int[] strides)
         {
-            _buffer = buffer ?? throw new ArgumentNullException(nameof(buffer));
+            _storage = storage ?? throw new ArgumentNullException(nameof(storage));
             _offset = offset;
             _shape = shape ?? throw new ArgumentNullException(nameof(shape));
             _strides = strides ?? throw new ArgumentNullException(nameof(strides));
+        }
+
+        /// <summary>
+        /// Internal constructor for creating zero-copy views over existing buffer memory.
+        /// </summary>
+        internal Tensor(T[] buffer, int offset, TensorShape shape, int[] strides)
+            : this(new ManagedArrayStorage<T>(buffer), offset, shape, strides)
+        {
         }
 
         #region Indexers
@@ -93,21 +113,21 @@ namespace ZeroTensor.Core
             {
                 ValidateIndices(indices);
                 int flatIndex = TensorStrides.ComputeFlatIndex(_strides, _offset, indices);
-                return _buffer[flatIndex];
+                return _storage.GetPinnableReference(flatIndex);
             }
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             set
             {
                 ValidateIndices(indices);
                 int flatIndex = TensorStrides.ComputeFlatIndex(_strides, _offset, indices);
-                _buffer[flatIndex] = value;
+                _storage.GetPinnableReference(flatIndex) = value;
             }
         }
 
         /// <summary>
         /// Gets the scalar value for a 0-rank or single-element tensor.
         /// </summary>
-        public T Scalar => _buffer[_offset];
+        public T Scalar => _storage.GetPinnableReference(_offset);
 
         /// <summary>
         /// Gets or sets a reference to an element in a 1D tensor (or scalar if index is 0).
@@ -117,10 +137,10 @@ namespace ZeroTensor.Core
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             get
             {
-                if (Rank == 0 && i == 0) return ref _buffer[_offset];
+                if (Rank == 0 && i == 0) return ref _storage.GetPinnableReference(_offset);
                 if (Rank != 1) throw new InvalidOperationException($"Rank is {Rank}, expected 1.");
                 if ((uint)i >= (uint)_shape[0]) throw new ArgumentOutOfRangeException(nameof(i));
-                return ref _buffer[_offset + i * _strides[0]];
+                return ref _storage.GetPinnableReference(_offset + i * _strides[0]);
             }
         }
 
@@ -135,7 +155,7 @@ namespace ZeroTensor.Core
                 if (Rank != 2) throw new InvalidOperationException($"Rank is {Rank}, expected 2.");
                 if ((uint)r >= (uint)_shape[0]) throw new ArgumentOutOfRangeException(nameof(r));
                 if ((uint)c >= (uint)_shape[1]) throw new ArgumentOutOfRangeException(nameof(c));
-                return ref _buffer[_offset + r * _strides[0] + c * _strides[1]];
+                return ref _storage.GetPinnableReference(_offset + r * _strides[0] + c * _strides[1]);
             }
         }
 
@@ -151,7 +171,7 @@ namespace ZeroTensor.Core
                 if ((uint)d0 >= (uint)_shape[0]) throw new ArgumentOutOfRangeException(nameof(d0));
                 if ((uint)d1 >= (uint)_shape[1]) throw new ArgumentOutOfRangeException(nameof(d1));
                 if ((uint)d2 >= (uint)_shape[2]) throw new ArgumentOutOfRangeException(nameof(d2));
-                return ref _buffer[_offset + d0 * _strides[0] + d1 * _strides[1] + d2 * _strides[2]];
+                return ref _storage.GetPinnableReference(_offset + d0 * _strides[0] + d1 * _strides[1] + d2 * _strides[2]);
             }
         }
 
@@ -168,7 +188,7 @@ namespace ZeroTensor.Core
                 if ((uint)d1 >= (uint)_shape[1]) throw new ArgumentOutOfRangeException(nameof(d1));
                 if ((uint)d2 >= (uint)_shape[2]) throw new ArgumentOutOfRangeException(nameof(d2));
                 if ((uint)d3 >= (uint)_shape[3]) throw new ArgumentOutOfRangeException(nameof(d3));
-                return ref _buffer[_offset + d0 * _strides[0] + d1 * _strides[1] + d2 * _strides[2] + d3 * _strides[3]];
+                return ref _storage.GetPinnableReference(_offset + d0 * _strides[0] + d1 * _strides[1] + d2 * _strides[2] + d3 * _strides[3]);
             }
         }
 
@@ -317,7 +337,7 @@ namespace ZeroTensor.Core
             Array.Copy(_strides, newStrides, Rank);
             newStrides[ax] = _strides[ax] * step;
 
-            return new Tensor<T>(_buffer, newOffset, new TensorShape(newDims), newStrides);
+            return new Tensor<T>(_storage, newOffset, new TensorShape(newDims), newStrides);
         }
 
         /// <summary>
@@ -341,7 +361,7 @@ namespace ZeroTensor.Core
 
             if (newRank == 0)
             {
-                return new Tensor<T>(_buffer, newOffset, TensorShape.Scalar, Array.Empty<int>());
+                return new Tensor<T>(_storage, newOffset, TensorShape.Scalar, Array.Empty<int>());
             }
 
             var newDims = new int[newRank];
@@ -353,7 +373,7 @@ namespace ZeroTensor.Core
                 newStrides[i] = _strides[i + 1];
             }
 
-            return new Tensor<T>(_buffer, newOffset, new TensorShape(newDims), newStrides);
+            return new Tensor<T>(_storage, newOffset, new TensorShape(newDims), newStrides);
         }
 
         /// <summary>
@@ -379,7 +399,7 @@ namespace ZeroTensor.Core
             newStrides[ax1] = _strides[ax2];
             newStrides[ax2] = _strides[ax1];
 
-            return new Tensor<T>(_buffer, _offset, new TensorShape(newDims), newStrides);
+            return new Tensor<T>(_storage, _offset, new TensorShape(newDims), newStrides);
         }
 
         /// <summary>
@@ -396,7 +416,7 @@ namespace ZeroTensor.Core
                 newStrides[i] = _strides[ax];
             }
 
-            return new Tensor<T>(_buffer, _offset, newShape, newStrides);
+            return new Tensor<T>(_storage, _offset, newShape, newStrides);
         }
 
         /// <summary>
@@ -415,7 +435,7 @@ namespace ZeroTensor.Core
             if (IsContiguous)
             {
                 var newStrides = TensorStrides.ComputeContiguousStrides(targetShape);
-                return new Tensor<T>(_buffer, _offset, targetShape, newStrides);
+                return new Tensor<T>(_storage, _offset, targetShape, newStrides);
             }
 
             // Non-contiguous memory requires packing into contiguous buffer first
@@ -447,7 +467,7 @@ namespace ZeroTensor.Core
                 }
             }
 
-            return new Tensor<T>(_buffer, _offset, newShape, newStrides.ToArray());
+            return new Tensor<T>(_storage, _offset, newShape, newStrides.ToArray());
         }
 
         /// <summary>
@@ -472,7 +492,7 @@ namespace ZeroTensor.Core
                 }
             }
 
-            return new Tensor<T>(_buffer, _offset, newShape, newStrides);
+            return new Tensor<T>(_storage, _offset, newShape, newStrides);
         }
 
         /// <summary>
@@ -494,7 +514,7 @@ namespace ZeroTensor.Core
             }
 
             var broadcastStrides = TensorStrides.ComputeBroadcastStrides(_shape, _strides, targetShape);
-            return new Tensor<T>(_buffer, _offset, targetShape, broadcastStrides);
+            return new Tensor<T>(_storage, _offset, targetShape, broadcastStrides);
         }
 
         #endregion
@@ -562,11 +582,19 @@ namespace ZeroTensor.Core
         }
 
         /// <summary>
+        /// Releases any underlying unmanaged or pooled resources held by this tensor's storage.
+        /// </summary>
+        public void Dispose()
+        {
+            _storage.Dispose();
+        }
+
+        /// <summary>
         /// Returns a contiguous tensor. If this tensor is already contiguous, returns this instance; otherwise returns a packed contiguous clone.
         /// </summary>
         public Tensor<T> ToContiguous()
         {
-            if (IsContiguous && _offset == 0 && _buffer.Length == Length)
+            if (IsContiguous && _offset == 0 && _storage.Length == Length)
             {
                 return this;
             }
@@ -585,7 +613,7 @@ namespace ZeroTensor.Core
                 throw new InvalidOperationException("Cannot obtain Span over a non-contiguous or strided tensor. Call ToContiguous() first.");
             }
 
-            return new Span<T>(_buffer, _offset, Length);
+            return _storage.AsSpan(_offset, Length);
         }
 
         /// <summary>
@@ -599,7 +627,7 @@ namespace ZeroTensor.Core
                 throw new InvalidOperationException("Cannot obtain ReadOnlySpan over a non-contiguous or strided tensor. Call ToContiguous() first.");
             }
 
-            return new ReadOnlySpan<T>(_buffer, _offset, Length);
+            return _storage.AsReadOnlySpan(_offset, Length);
         }
 
         /// <summary>
@@ -610,7 +638,7 @@ namespace ZeroTensor.Core
             var result = new T[Length];
             if (IsContiguous)
             {
-                Array.Copy(_buffer, _offset, result, 0, Length);
+                AsReadOnlySpan().CopyTo(result);
                 return result;
             }
 
