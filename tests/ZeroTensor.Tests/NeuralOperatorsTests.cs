@@ -161,5 +161,229 @@ namespace ZeroTensor.Tests
                 }
             }
         }
+
+        [Fact]
+        public void EmbeddingLookup_Correctness()
+        {
+            // Vocab = 4, Dim = 3
+            var weight = Tensor.FromArray(new float[]
+            {
+                10f, 11f, 12f, // token 0
+                20f, 21f, 22f, // token 1
+                30f, 31f, 32f, // token 2
+                40f, 41f, 42f  // token 3
+            }, 4, 3);
+
+            // Batch = 2, Seq = 2
+            var indices = Tensor.FromArray(new int[]
+            {
+                3, 0,
+                1, 2
+            }, 2, 2);
+
+            var emb = TensorOps.EmbeddingLookup(indices, weight);
+
+            Assert.Equal(new[] { 2, 2, 3 }, emb.Shape.Dimensions);
+
+            // batch 0, seq 0 -> token 3
+            Assert.Equal(40f, emb[0, 0, 0]);
+            Assert.Equal(41f, emb[0, 0, 1]);
+            Assert.Equal(42f, emb[0, 0, 2]);
+
+            // batch 0, seq 1 -> token 0
+            Assert.Equal(10f, emb[0, 1, 0]);
+
+            // batch 1, seq 0 -> token 1
+            Assert.Equal(20f, emb[1, 0, 0]);
+
+            // batch 1, seq 1 -> token 2
+            Assert.Equal(30f, emb[1, 1, 0]);
+        }
+
+        [Fact]
+        public void ApplyRoPE_NormPreservation()
+        {
+            // Seq = 2, HeadDim = 4
+            var x = Tensor.FromArray(new float[]
+            {
+                1f, 2f, 3f, 4f, // pos 0
+                5f, 6f, 7f, 8f  // pos 1
+            }, 1, 1, 2, 4);
+
+            var xRot = TensorOps.ApplyRoPE(x, startPos: 0);
+
+            Assert.Equal(new[] { 1, 1, 2, 4 }, xRot.Shape.Dimensions);
+
+            // At pos = 0, angle = 0 -> cos = 1, sin = 0, so vector must be unchanged!
+            Assert.Equal(1f, xRot[0, 0, 0, 0]);
+            Assert.Equal(2f, xRot[0, 0, 0, 1]);
+            Assert.Equal(3f, xRot[0, 0, 0, 2]);
+            Assert.Equal(4f, xRot[0, 0, 0, 3]);
+
+            // At pos = 1, rotation is orthogonal, so L2 norm squared must be preserved!
+            float normOrigSq = 5f * 5f + 6f * 6f + 7f * 7f + 8f * 8f; // 25 + 36 + 49 + 64 = 174
+            float r0 = xRot[0, 0, 1, 0];
+            float r1 = xRot[0, 0, 1, 1];
+            float r2 = xRot[0, 0, 1, 2];
+            float r3 = xRot[0, 0, 1, 3];
+            float normRotSq = r0 * r0 + r1 * r1 + r2 * r2 + r3 * r3;
+
+            Assert.True(Math.Abs(normOrigSq - normRotSq) < 1e-3f, $"Norm not preserved: orig={normOrigSq}, rot={normRotSq}");
+        }
+
+        [Fact]
+        public void KVCache_AppendAndRetrieveValid()
+        {
+            // Batch = 1, Heads = 2, MaxSeq = 10, Dim = 4
+            using var cache = new ZeroTensor.Core.Neural.KVCache<float>(1, 2, 10, 4);
+            Assert.Equal(0, cache.CurrentLength);
+
+            // 1. Prefill 3 tokens
+            var kPrefill = Tensor.Ones(1, 2, 3, 4);
+            var vPrefill = Tensor.Full(2f, 1, 2, 3, 4);
+            cache.Append(kPrefill, vPrefill);
+            Assert.Equal(3, cache.CurrentLength);
+
+            var validK = cache.GetValidKeys();
+            var validV = cache.GetValidValues();
+            Assert.Equal(new[] { 1, 2, 3, 4 }, validK.Shape.Dimensions);
+            Assert.Equal(new[] { 1, 2, 3, 4 }, validV.Shape.Dimensions);
+            Assert.Equal(1f, validK[0, 0, 2, 0]);
+            Assert.Equal(2f, validV[0, 0, 2, 0]);
+
+            // 2. Decode 1 new token
+            var kNext = Tensor.Full(3f, 1, 2, 1, 4);
+            var vNext = Tensor.Full(4f, 1, 2, 1, 4);
+            cache.Append(kNext, vNext);
+            Assert.Equal(4, cache.CurrentLength);
+
+            validK = cache.GetValidKeys();
+            validV = cache.GetValidValues();
+            Assert.Equal(new[] { 1, 2, 4, 4 }, validK.Shape.Dimensions);
+            Assert.Equal(3f, validK[0, 0, 3, 0]);
+            Assert.Equal(4f, validV[0, 0, 3, 0]);
+
+            // 3. Reset
+            cache.Reset();
+            Assert.Equal(0, cache.CurrentLength);
+        }
+
+        [Fact]
+        public void MaxPool2D_2x2_Stride2()
+        {
+            var input = Tensor.FromArray(new float[]
+            {
+                1f, 3f, 2f, 4f,
+                5f, 6f, 7f, 8f,
+                9f, 2f, 3f, 1f,
+                4f, 8f, 5f, 6f
+            }, 1, 1, 4, 4);
+
+            var pooled = TensorOps.MaxPool2D(input, kernelSize: 2, stride: 2);
+
+            Assert.Equal(new[] { 1, 1, 2, 2 }, pooled.Shape.Dimensions);
+            // Window (0,0): max(1, 3, 5, 6) = 6
+            Assert.Equal(6f, pooled[0, 0, 0, 0]);
+            // Window (0,1): max(2, 4, 7, 8) = 8
+            Assert.Equal(8f, pooled[0, 0, 0, 1]);
+            // Window (1,0): max(9, 2, 4, 8) = 9
+            Assert.Equal(9f, pooled[0, 0, 1, 0]);
+            // Window (1,1): max(3, 1, 5, 6) = 6
+            Assert.Equal(6f, pooled[0, 0, 1, 1]);
+        }
+
+        [Fact]
+        public void AvgPool2D_2x2_Stride2()
+        {
+            var input = Tensor.FromArray(new float[]
+            {
+                1f, 3f, 2f, 4f,
+                5f, 7f, 6f, 8f,
+                1f, 1f, 2f, 2f,
+                3f, 3f, 4f, 4f
+            }, 1, 1, 4, 4);
+
+            var pooled = TensorOps.AvgPool2D(input, kernelSize: 2, stride: 2);
+
+            Assert.Equal(new[] { 1, 1, 2, 2 }, pooled.Shape.Dimensions);
+            // Window (0,0): (1 + 3 + 5 + 7) / 4 = 16 / 4 = 4
+            Assert.Equal(4f, pooled[0, 0, 0, 0]);
+            // Window (0,1): (2 + 4 + 6 + 8) / 4 = 20 / 4 = 5
+            Assert.Equal(5f, pooled[0, 0, 0, 1]);
+            // Window (1,0): (1 + 1 + 3 + 3) / 4 = 8 / 4 = 2
+            Assert.Equal(2f, pooled[0, 0, 1, 0]);
+            // Window (1,1): (2 + 2 + 4 + 4) / 4 = 12 / 4 = 3
+            Assert.Equal(3f, pooled[0, 0, 1, 1]);
+        }
+
+        [Fact]
+        public void Interpolate2D_NearestAndBilinear()
+        {
+            // 2x2 image
+            var input = Tensor.FromArray(new float[]
+            {
+                10f, 20f,
+                30f, 40f
+            }, 1, 1, 2, 2);
+
+            // 1. Nearest upsample to 4x4
+            var nearest = TensorOps.Interpolate2D(input, 4, 4, InterpolationMode.Nearest);
+            Assert.Equal(new[] { 1, 1, 4, 4 }, nearest.Shape.Dimensions);
+            Assert.Equal(10f, nearest[0, 0, 0, 0]);
+            Assert.Equal(10f, nearest[0, 0, 1, 1]);
+            Assert.Equal(20f, nearest[0, 0, 0, 3]);
+            Assert.Equal(40f, nearest[0, 0, 3, 3]);
+
+            // 2. Bilinear upsample to 3x3 with alignCorners = true
+            var bilinear = TensorOps.Interpolate2D(input, 3, 3, InterpolationMode.Bilinear, alignCorners: true);
+            Assert.Equal(new[] { 1, 1, 3, 3 }, bilinear.Shape.Dimensions);
+            // Center pixel must be average of all 4 corners: (10 + 20 + 30 + 40) / 4 = 25
+            Assert.Equal(10f, bilinear[0, 0, 0, 0]);
+            Assert.Equal(20f, bilinear[0, 0, 0, 2]);
+            Assert.Equal(30f, bilinear[0, 0, 2, 0]);
+            Assert.Equal(40f, bilinear[0, 0, 2, 2]);
+            Assert.True(Math.Abs(bilinear[0, 0, 1, 1] - 25f) < 1e-4f);
+        }
+
+        [Fact]
+        public void GroupNorm_4Channels_2Groups()
+        {
+            // 4 channels, 2 groups -> 2 channels per group
+            // Spatial 2x2: each group has 2 * 2 * 2 = 8 values
+            var input = Tensor.Zeros<float>(1, 4, 2, 2);
+            // Group 0: channels 0, 1
+            for (int c = 0; c < 2; c++)
+                for (int r = 0; r < 2; r++)
+                    for (int col = 0; col < 2; col++)
+                        input[0, c, r, col] = (c * 4 + r * 2 + col); // values 0..7
+
+            // Group 1: channels 2, 3
+            for (int c = 2; c < 4; c++)
+                for (int r = 0; r < 2; r++)
+                    for (int col = 0; col < 2; col++)
+                        input[0, c, r, col] = (c * 4 + r * 2 + col) * 10f;
+
+            var gn = TensorOps.GroupNorm(input, numGroups: 2, eps: 1e-5f);
+            Assert.Equal(new[] { 1, 4, 2, 2 }, gn.Shape.Dimensions);
+
+            // Group 0 mean = 3.5, variance = 5.25, std = sqrt(5.25) = 2.291288
+            // Check normalized mean across group 0 is approx 0
+            float g0Sum = 0f;
+            for (int c = 0; c < 2; c++)
+                for (int r = 0; r < 2; r++)
+                    for (int col = 0; col < 2; col++)
+                        g0Sum += gn[0, c, r, col];
+
+            Assert.True(Math.Abs(g0Sum) < 1e-4f);
+
+            // Check normalized mean across group 1 is approx 0
+            float g1Sum = 0f;
+            for (int c = 2; c < 4; c++)
+                for (int r = 0; r < 2; r++)
+                    for (int col = 0; col < 2; col++)
+                        g1Sum += gn[0, c, r, col];
+
+            Assert.True(Math.Abs(g1Sum) < 1e-4f);
+        }
     }
 }

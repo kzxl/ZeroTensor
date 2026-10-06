@@ -603,6 +603,42 @@ namespace ZeroTensor.Core
         }
 
         /// <summary>
+        /// Ensures this tensor resides in host CPU memory.
+        /// If already on CPU, returns this instance; otherwise transfers data from hardware device (VRAM) to host CPU.
+        /// </summary>
+        public Tensor<T> ToCpu()
+        {
+            if (Device == DeviceType.Cpu) return this;
+
+            if (_storage is IDeviceStorageTransfer<T> transfer)
+            {
+                var cpuTensor = new Tensor<T>(_shape);
+                transfer.CopyToHost(_offset, Length, cpuTensor.AsSpan());
+                return cpuTensor;
+            }
+
+            throw new NotSupportedException($"Storage of type {_storage.GetType().Name} on device {Device} does not support Host transfer.");
+        }
+
+        /// <summary>
+        /// Transfers this tensor to a destination hardware device storage (Direct3D 11, Vulkan, CUDA).
+        /// </summary>
+        public Tensor<T> ToDevice(ITensorStorage<T> deviceStorage)
+        {
+            if (deviceStorage == null) throw new ArgumentNullException(nameof(deviceStorage));
+
+            if (deviceStorage is IDeviceStorageTransfer<T> transfer)
+            {
+                var contig = IsContiguous ? this : ToContiguous();
+                transfer.CopyFromHost(0, Length, contig.AsReadOnlySpan());
+                var strides = TensorStrides.ComputeContiguousStrides(_shape);
+                return new Tensor<T>(deviceStorage, 0, _shape, strides);
+            }
+
+            throw new NotSupportedException($"Target device storage {deviceStorage.GetType().Name} does not implement {nameof(IDeviceStorageTransfer<T>)}.");
+        }
+
+        /// <summary>
         /// Returns a Span view over the contiguous memory buffer.
         /// Throws <see cref="InvalidOperationException"/> if the tensor is non-contiguous or strided.
         /// </summary>

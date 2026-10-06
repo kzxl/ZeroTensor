@@ -180,5 +180,143 @@ namespace ZeroTensor.Tests
                 }
             }
         }
+
+        [Fact]
+        public void GgufFile_OpenMemoryMapped_ZeroCopy()
+        {
+            string tempFile = Path.Combine(Path.GetTempPath(), $"gguf_test_{Guid.NewGuid():N}.gguf");
+            try
+            {
+                // Write a valid mini-GGUF v3 file
+                using (var fs = new FileStream(tempFile, FileMode.Create, FileAccess.Write))
+                using (var writer = new BinaryWriter(fs, System.Text.Encoding.UTF8))
+                {
+                    // 1. Header: magic 'GGUF', version 3, tensor_count 1, metadata_kv_count 1
+                    writer.Write(0x46554747u);
+                    writer.Write(3u);
+                    writer.Write((ulong)1); // 1 tensor
+                    writer.Write((ulong)1); // 1 metadata
+
+                    // 2. Metadata: key "general.architecture" -> string "llama"
+                    WriteGgufString(writer, "general.architecture");
+                    writer.Write((uint)8); // type 8 = string
+                    WriteGgufString(writer, "llama");
+
+                    // 3. Tensor Info: "model.embed"
+                    WriteGgufString(writer, "model.embed");
+                    writer.Write((uint)2); // n_dims = 2
+                    // GGUF dims in reverse (col, row): width=3, height=2 -> C# shape [2, 3]
+                    writer.Write((ulong)3);
+                    writer.Write((ulong)2);
+                    writer.Write((uint)GgmlType.F32); // type 0
+                    writer.Write((ulong)0); // relative offset = 0
+
+                    // 4. Align stream to 32 bytes
+                    long curPos = fs.Position;
+                    long rem = curPos % 32;
+                    long pad = rem == 0 ? 0 : 32 - rem;
+                    for (int i = 0; i < pad; i++) writer.Write((byte)0);
+
+                    // 5. Binary data: 2 x 3 float values
+                    for (int i = 1; i <= 6; i++)
+                    {
+                        writer.Write((float)i * 1.5f);
+                    }
+                }
+
+                // Open using GgufFile with zero-copy
+                using var archive = GgufFile.OpenMemoryMapped(tempFile);
+                Assert.NotNull(archive);
+                Assert.Equal("llama", archive.Metadata["general.architecture"]);
+                Assert.Single(archive.TensorInfos);
+                Assert.Single(archive.Tensors);
+
+                var tensor = archive.Tensors["model.embed"];
+                Assert.Equal(new[] { 2, 3 }, tensor.Shape.Dimensions);
+                Assert.IsType<MemoryMappedStorage<float>>(tensor.Storage);
+
+                Assert.Equal(1.5f, tensor[0, 0]);
+                Assert.Equal(3.0f, tensor[0, 1]);
+                Assert.Equal(4.5f, tensor[0, 2]);
+                Assert.Equal(6.0f, tensor[1, 0]);
+                Assert.Equal(7.5f, tensor[1, 1]);
+                Assert.Equal(9.0f, tensor[1, 2]);
+            }
+            finally
+            {
+                if (File.Exists(tempFile))
+                {
+                    try { File.Delete(tempFile); } catch { }
+                }
+            }
+        }
+
+        [Fact]
+        public void DeviceMemoryStorage_TransferToDeviceAndBackToCpu()
+        {
+            var mockFactory = new MockDeviceStorageFactory<float>();
+
+            // 1. Create a CPU tensor
+            var cpuTensor = Tensor.FromArray(new float[] { 10f, 20f, 30f, 40f, 50f, 60f }, 2, 3);
+            Assert.Equal(DeviceType.Cpu, cpuTensor.Device);
+            Assert.True(cpuTensor.Storage.IsCpuAccessible);
+
+            // 2. Allocate mock device storage and transfer
+            var devStorage = mockFactory.AllocateDeviceStorage(cpuTensor.Length, DeviceType.Cuda);
+            var gpuTensor = cpuTensor.ToDevice(devStorage);
+            Assert.Equal(DeviceType.Cuda, gpuTensor.Device);
+            Assert.False(gpuTensor.Storage.IsCpuAccessible);
+            Assert.IsType<DeviceMemoryStorage<float>>(gpuTensor.Storage);
+            Assert.NotEqual(IntPtr.Zero, ((DeviceMemoryStorage<float>)gpuTensor.Storage).DeviceHandle);
+
+            // Accessing CPU span directly on device tensor must throw NotSupportedException
+            Assert.Throws<NotSupportedException>(() => gpuTensor.Storage.AsSpan(0, 6));
+
+            // 3. Transfer back to CPU
+            var backToCpu = gpuTensor.ToCpu();
+            Assert.Equal(DeviceType.Cpu, backToCpu.Device);
+            Assert.True(backToCpu.Storage.IsCpuAccessible);
+            Assert.Equal(new[] { 2, 3 }, backToCpu.Shape.Dimensions);
+
+            Assert.Equal(10f, backToCpu[0, 0]);
+            Assert.Equal(20f, backToCpu[0, 1]);
+            Assert.Equal(30f, backToCpu[0, 2]);
+            Assert.Equal(40f, backToCpu[1, 0]);
+            Assert.Equal(50f, backToCpu[1, 1]);
+            Assert.Equal(60f, backToCpu[1, 2]);
+
+            // Dispose device tensor
+            gpuTensor.Dispose();
+            Assert.True(gpuTensor.Storage.IsDisposed);
+        }
+
+        private class MockDeviceStorageFactory<T> where T : unmanaged, IEquatable<T>
+        {
+            private readonly Dictionary<IntPtr, T[]> _deviceSimulatedMemory = new Dictionary<IntPtr, T[]>();
+            private long _nextHandle = 0x1000;
+
+            public DeviceMemoryStorage<T> AllocateDeviceStorage(int length, DeviceType device)
+            {
+                var handle = new IntPtr(++_nextHandle);
+                var simulatedBuffer = new T[length];
+                _deviceSimulatedMemory[handle] = simulatedBuffer;
+
+                return new DeviceMemoryStorage<T>(
+                    device,
+                    length,
+                    handle,
+                    copyToHost: (offset, len, dest) => simulatedBuffer.AsSpan(offset, len).CopyTo(dest),
+                    copyFromHost: (offset, len, src) => src.CopyTo(simulatedBuffer.AsSpan(offset, len)),
+                    onDispose: () => _deviceSimulatedMemory.Remove(handle)
+                );
+            }
+        }
+
+        private static void WriteGgufString(BinaryWriter writer, string s)
+        {
+            byte[] bytes = System.Text.Encoding.UTF8.GetBytes(s);
+            writer.Write((ulong)bytes.Length);
+            writer.Write(bytes);
+        }
     }
 }

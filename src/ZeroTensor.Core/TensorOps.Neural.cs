@@ -5,6 +5,15 @@ using System.Threading.Tasks;
 
 namespace ZeroTensor.Core
 {
+    /// <summary>
+    /// Specifies the interpolation algorithm for spatial tensor resizing.
+    /// </summary>
+    public enum InterpolationMode
+    {
+        Nearest = 0,
+        Bilinear = 1
+    }
+
     public static partial class TensorOps
     {
         #region Unsafe SIMD Vector Helpers
@@ -463,6 +472,147 @@ namespace ZeroTensor.Core
 
         #endregion
 
+        #region LLM Primitives: EmbeddingLookup & RoPE
+
+        /// <summary>
+        /// Retrieves embedding vectors from a weight matrix: Output[..., D] = Weight[Indices[...], D].
+        /// Supports multi-dimensional token batches [B, S] -> [B, S, D] or [S] -> [S, D].
+        /// </summary>
+        public static Tensor<float> EmbeddingLookup(Tensor<int> indices, Tensor<float> weight)
+        {
+            if (indices == null) throw new ArgumentNullException(nameof(indices));
+            if (weight == null) throw new ArgumentNullException(nameof(weight));
+            if (weight.Rank != 2) throw new ArgumentException("Embedding weight tensor must have rank 2 [VocabSize, EmbeddingDim].", nameof(weight));
+
+            int vocabSize = weight.Shape[0];
+            int embeddingDim = weight.Shape[1];
+
+            // Build output shape: concat indices.Shape with [embeddingDim]
+            var outDims = new int[indices.Rank + 1];
+            for (int i = 0; i < indices.Rank; i++) outDims[i] = indices.Shape[i];
+            outDims[outDims.Length - 1] = embeddingDim;
+
+            var result = new Tensor<float>(new TensorShape(outDims));
+            int numTokens = indices.Length;
+
+            var contigIndices = indices.IsContiguous ? indices : indices.ToContiguous();
+            var contigWeight = weight.IsContiguous ? weight : weight.ToContiguous();
+
+            Parallel.For(0, numTokens, t =>
+            {
+                int tokenIdx = contigIndices.Storage.GetPinnableReference(contigIndices.Offset + t);
+                if ((uint)tokenIdx >= (uint)vocabSize)
+                {
+                    throw new IndexOutOfRangeException($"Token index {tokenIdx} is out of vocabulary range [0, {vocabSize}).");
+                }
+
+                int srcOffset = contigWeight.Offset + tokenIdx * embeddingDim;
+                int dstOffset = result.Offset + t * embeddingDim;
+
+                ref float pSrc = ref contigWeight.Storage.GetPinnableReference(srcOffset);
+                ref float pDst = ref result.Storage.GetPinnableReference(dstOffset);
+
+                for (int d = 0; d < embeddingDim; d++)
+                {
+                    Unsafe.Add(ref pDst, d) = Unsafe.Add(ref pSrc, d);
+                }
+            });
+
+            return result;
+        }
+
+        /// <summary>
+        /// Applies Rotary Positional Embedding (RoPE) to Query or Key tensors.
+        /// Supports standard LLaMA/Mistral/Qwen/DiT split-half layout or interleaved layout.
+        /// x shape: [..., SeqLen, HeadDim].
+        /// </summary>
+        public static Tensor<float> ApplyRoPE(
+            Tensor<float> x,
+            int startPos = 0,
+            float thetaBase = 10000.0f,
+            bool interleaved = false)
+        {
+            if (x == null) throw new ArgumentNullException(nameof(x));
+            if (x.Rank < 2) throw new ArgumentException("Tensor x must have rank >= 2 [..., SeqLen, HeadDim].", nameof(x));
+
+            int headDim = x.Shape[x.Rank - 1];
+            int seqLen = x.Shape[x.Rank - 2];
+
+            if ((headDim & 1) != 0)
+            {
+                throw new ArgumentException($"Head dimension ({headDim}) must be an even number for RoPE.", nameof(x));
+            }
+
+            var contigX = x.IsContiguous ? x : x.ToContiguous();
+            var result = new Tensor<float>(contigX.Shape);
+
+            int totalHeads = contigX.Length / (seqLen * headDim);
+            int halfDim = headDim / 2;
+
+            // Precompute inverse frequencies for halfDim
+            float[] invFreq = new float[halfDim];
+            for (int i = 0; i < halfDim; i++)
+            {
+                invFreq[i] = 1.0f / (float)Math.Pow(thetaBase, (2.0 * i) / headDim);
+            }
+
+            Parallel.For(0, totalHeads, h =>
+            {
+                int headBaseOffset = contigX.Offset + h * seqLen * headDim;
+                int headDstBaseOffset = result.Offset + h * seqLen * headDim;
+
+                for (int s = 0; s < seqLen; s++)
+                {
+                    int pos = startPos + s;
+                    int tokenSrcOffset = headBaseOffset + s * headDim;
+                    int tokenDstOffset = headDstBaseOffset + s * headDim;
+
+                    ref float pSrc = ref contigX.Storage.GetPinnableReference(tokenSrcOffset);
+                    ref float pDst = ref result.Storage.GetPinnableReference(tokenDstOffset);
+
+                    if (!interleaved)
+                    {
+                        // Standard LLaMA / HuggingFace: split halves
+                        for (int i = 0; i < halfDim; i++)
+                        {
+                            float angle = pos * invFreq[i];
+                            float cos = (float)Math.Cos(angle);
+                            float sin = (float)Math.Sin(angle);
+
+                            float x1 = Unsafe.Add(ref pSrc, i);
+                            float x2 = Unsafe.Add(ref pSrc, i + halfDim);
+
+                            Unsafe.Add(ref pDst, i) = x1 * cos - x2 * sin;
+                            Unsafe.Add(ref pDst, i + halfDim) = x2 * cos + x1 * sin;
+                        }
+                    }
+                    else
+                    {
+                        // Interleaved GPT-NeoX layout
+                        for (int i = 0; i < halfDim; i++)
+                        {
+                            float angle = pos * invFreq[i];
+                            float cos = (float)Math.Cos(angle);
+                            float sin = (float)Math.Sin(angle);
+
+                            int idx1 = 2 * i;
+                            int idx2 = 2 * i + 1;
+
+                            float x1 = Unsafe.Add(ref pSrc, idx1);
+                            float x2 = Unsafe.Add(ref pSrc, idx2);
+
+                            Unsafe.Add(ref pDst, idx1) = x1 * cos - x2 * sin;
+                            Unsafe.Add(ref pDst, idx2) = x2 * cos + x1 * sin;
+                        }
+                    }
+                }
+            });
+
+            return result;
+        }
+
+        #endregion
+
         #region Computer Vision: Conv2D (im2col + GEMM Lowering)
 
         /// <summary>
@@ -582,6 +732,346 @@ namespace ZeroTensor.Core
         }
 
         #endregion
+
+        #region Computer Vision: Pooling & Interpolation
+
+        /// <summary>
+        /// Max Pooling 2D: Downsamples spatial dimensions taking the maximum value in each sliding window.
+        /// Input [N, C, H, W] -> Output [N, C, H_out, W_out].
+        /// </summary>
+        public static Tensor<float> MaxPool2D(
+            Tensor<float> input,
+            int kernelSize,
+            int stride = -1,
+            int padding = 0)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (input.Rank != 4) throw new ArgumentException("Input tensor must have rank 4 [N, C, H, W].", nameof(input));
+            if (kernelSize <= 0) throw new ArgumentOutOfRangeException(nameof(kernelSize));
+
+            int actualStride = stride <= 0 ? kernelSize : stride;
+            int batchSize = input.Shape[0];
+            int channels = input.Shape[1];
+            int inH = input.Shape[2];
+            int inW = input.Shape[3];
+
+            int outH = (inH + 2 * padding - kernelSize) / actualStride + 1;
+            int outW = (inW + 2 * padding - kernelSize) / actualStride + 1;
+
+            if (outH <= 0 || outW <= 0)
+            {
+                throw new InvalidOperationException($"Calculated output spatial size [{outH}, {outW}] is invalid.");
+            }
+
+            var output = new Tensor<float>(batchSize, channels, outH, outW);
+
+            Parallel.For(0, batchSize * channels, bc =>
+            {
+                int b = bc / channels;
+                int c = bc % channels;
+
+                for (int oh = 0; oh < outH; oh++)
+                {
+                    int startH = oh * actualStride - padding;
+                    int endH = Math.Min(startH + kernelSize, inH);
+                    int validStartH = Math.Max(startH, 0);
+
+                    for (int ow = 0; ow < outW; ow++)
+                    {
+                        int startW = ow * actualStride - padding;
+                        int endW = Math.Min(startW + kernelSize, inW);
+                        int validStartW = Math.Max(startW, 0);
+
+                        float maxVal = float.NegativeInfinity;
+
+                        for (int ih = validStartH; ih < endH; ih++)
+                        {
+                            for (int iw = validStartW; iw < endW; iw++)
+                            {
+                                float val = input[b, c, ih, iw];
+                                if (val > maxVal) maxVal = val;
+                            }
+                        }
+
+                        output[b, c, oh, ow] = float.IsNegativeInfinity(maxVal) ? 0f : maxVal;
+                    }
+                }
+            });
+
+            return output;
+        }
+
+        /// <summary>
+        /// Average Pooling 2D: Downsamples spatial dimensions taking the average value in each sliding window.
+        /// Input [N, C, H, W] -> Output [N, C, H_out, W_out].
+        /// </summary>
+        public static Tensor<float> AvgPool2D(
+            Tensor<float> input,
+            int kernelSize,
+            int stride = -1,
+            int padding = 0,
+            bool countIncludePad = true)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (input.Rank != 4) throw new ArgumentException("Input tensor must have rank 4 [N, C, H, W].", nameof(input));
+            if (kernelSize <= 0) throw new ArgumentOutOfRangeException(nameof(kernelSize));
+
+            int actualStride = stride <= 0 ? kernelSize : stride;
+            int batchSize = input.Shape[0];
+            int channels = input.Shape[1];
+            int inH = input.Shape[2];
+            int inW = input.Shape[3];
+
+            int outH = (inH + 2 * padding - kernelSize) / actualStride + 1;
+            int outW = (inW + 2 * padding - kernelSize) / actualStride + 1;
+
+            if (outH <= 0 || outW <= 0)
+            {
+                throw new InvalidOperationException($"Calculated output spatial size [{outH}, {outW}] is invalid.");
+            }
+
+            var output = new Tensor<float>(batchSize, channels, outH, outW);
+            float poolArea = kernelSize * kernelSize;
+
+            Parallel.For(0, batchSize * channels, bc =>
+            {
+                int b = bc / channels;
+                int c = bc % channels;
+
+                for (int oh = 0; oh < outH; oh++)
+                {
+                    int startH = oh * actualStride - padding;
+                    int endH = Math.Min(startH + kernelSize, inH);
+                    int validStartH = Math.Max(startH, 0);
+
+                    for (int ow = 0; ow < outW; ow++)
+                    {
+                        int startW = ow * actualStride - padding;
+                        int endW = Math.Min(startW + kernelSize, inW);
+                        int validStartW = Math.Max(startW, 0);
+
+                        float sum = 0f;
+                        int count = 0;
+
+                        for (int ih = validStartH; ih < endH; ih++)
+                        {
+                            for (int iw = validStartW; iw < endW; iw++)
+                            {
+                                sum += input[b, c, ih, iw];
+                                count++;
+                            }
+                        }
+
+                        float divisor = countIncludePad ? poolArea : Math.Max(count, 1);
+                        output[b, c, oh, ow] = sum / divisor;
+                    }
+                }
+            });
+
+            return output;
+        }
+
+        /// <summary>
+        /// Interpolates / resizes a 4D spatial tensor [N, C, H, W] to target [N, C, outH, outW].
+        /// Supports Bilinear and Nearest neighbor interpolation with corner alignment.
+        /// </summary>
+        public static Tensor<float> Interpolate2D(
+            Tensor<float> input,
+            int outH,
+            int outW,
+            InterpolationMode mode = InterpolationMode.Bilinear,
+            bool alignCorners = false)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (input.Rank != 4) throw new ArgumentException("Input tensor must have rank 4 [N, C, H, W].", nameof(input));
+            if (outH <= 0) throw new ArgumentOutOfRangeException(nameof(outH));
+            if (outW <= 0) throw new ArgumentOutOfRangeException(nameof(outW));
+
+            int batchSize = input.Shape[0];
+            int channels = input.Shape[1];
+            int inH = input.Shape[2];
+            int inW = input.Shape[3];
+
+            if (inH == outH && inW == outW)
+            {
+                return input.Clone();
+            }
+
+            var output = new Tensor<float>(batchSize, channels, outH, outW);
+
+            if (mode == InterpolationMode.Nearest)
+            {
+                float scaleH = (float)inH / outH;
+                float scaleW = (float)inW / outW;
+
+                Parallel.For(0, batchSize * channels, bc =>
+                {
+                    int b = bc / channels;
+                    int c = bc % channels;
+
+                    for (int oh = 0; oh < outH; oh++)
+                    {
+                        int ih = Math.Min((int)(oh * scaleH), inH - 1);
+                        for (int ow = 0; ow < outW; ow++)
+                        {
+                            int iw = Math.Min((int)(ow * scaleW), inW - 1);
+                            output[b, c, oh, ow] = input[b, c, ih, iw];
+                        }
+                    }
+                });
+
+                return output;
+            }
+
+            // Bilinear mode
+            float rH = alignCorners && outH > 1 ? (float)(inH - 1) / (outH - 1) : (float)inH / outH;
+            float rW = alignCorners && outW > 1 ? (float)(inW - 1) / (outW - 1) : (float)inW / outW;
+
+            Parallel.For(0, batchSize * channels, bc =>
+            {
+                int b = bc / channels;
+                int c = bc % channels;
+
+                for (int oh = 0; oh < outH; oh++)
+                {
+                    float srcH = alignCorners ? oh * rH : (oh + 0.5f) * rH - 0.5f;
+                    int h0 = (int)Math.Floor(srcH);
+                    int h1 = Math.Min(h0 + 1, inH - 1);
+                    h0 = Math.Max(h0, 0);
+                    float dh = srcH - h0;
+                    if (srcH < 0f) dh = 0f;
+
+                    for (int ow = 0; ow < outW; ow++)
+                    {
+                        float srcW = alignCorners ? ow * rW : (ow + 0.5f) * rW - 0.5f;
+                        int w0 = (int)Math.Floor(srcW);
+                        int w1 = Math.Min(w0 + 1, inW - 1);
+                        w0 = Math.Max(w0, 0);
+                        float dw = srcW - w0;
+                        if (srcW < 0f) dw = 0f;
+
+                        float p00 = input[b, c, h0, w0];
+                        float p01 = input[b, c, h0, w1];
+                        float p10 = input[b, c, h1, w0];
+                        float p11 = input[b, c, h1, w1];
+
+                        float val = (1f - dh) * (1f - dw) * p00 +
+                                    (1f - dh) * dw * p01 +
+                                    dh * (1f - dw) * p10 +
+                                    dh * dw * p11;
+
+                        output[b, c, oh, ow] = val;
+                    }
+                }
+            });
+
+            return output;
+        }
+
+        #endregion
+
+        #region Normalization: GroupNorm
+
+        /// <summary>
+        /// Group Normalization: divides channels into G groups and normalizes spatial features independently.
+        /// Essential for Diffusion models (Stable Diffusion, SDXL, SANA, DiT), VAE decoders, and ConvNets.
+        /// y = ((x - mean) / sqrt(var + eps)) * weight + bias
+        /// </summary>
+        public static Tensor<float> GroupNorm(
+            Tensor<float> x,
+            int numGroups,
+            Tensor<float>? weight = null,
+            Tensor<float>? bias = null,
+            float eps = 1e-5f)
+        {
+            if (x == null) throw new ArgumentNullException(nameof(x));
+            if (x.Rank != 4) throw new ArgumentException("GroupNorm requires rank 4 [N, C, H, W].", nameof(x));
+            if (numGroups <= 0) throw new ArgumentOutOfRangeException(nameof(numGroups));
+
+            int batchSize = x.Shape[0];
+            int channels = x.Shape[1];
+            int h = x.Shape[2];
+            int w = x.Shape[3];
+
+            if (channels % numGroups != 0)
+            {
+                throw new ArgumentException($"Channel count ({channels}) must be divisible by numGroups ({numGroups}).");
+            }
+
+            if (weight != null && (weight.Length != channels || weight.Rank != 1))
+            {
+                throw new ArgumentException($"Weight must be 1D tensor with length {channels}.", nameof(weight));
+            }
+
+            if (bias != null && (bias.Length != channels || bias.Rank != 1))
+            {
+                throw new ArgumentException($"Bias must be 1D tensor with length {channels}.", nameof(bias));
+            }
+
+            int channelsPerGroup = channels / numGroups;
+            int groupSpatialSize = channelsPerGroup * h * w;
+            float invGroupSize = 1.0f / groupSpatialSize;
+
+            var contigX = x.IsContiguous ? x : x.ToContiguous();
+            var result = new Tensor<float>(contigX.Shape);
+
+            Parallel.For(0, batchSize * numGroups, bg =>
+            {
+                int b = bg / numGroups;
+                int g = bg % numGroups;
+                int startChannel = g * channelsPerGroup;
+                int endChannel = startChannel + channelsPerGroup;
+
+                // 1. Calculate Mean
+                float sum = 0f;
+                for (int c = startChannel; c < endChannel; c++)
+                {
+                    for (int ih = 0; ih < h; ih++)
+                    {
+                        for (int iw = 0; iw < w; iw++)
+                        {
+                            sum += contigX[b, c, ih, iw];
+                        }
+                    }
+                }
+                float mean = sum * invGroupSize;
+
+                // 2. Calculate Variance
+                float sumVar = 0f;
+                for (int c = startChannel; c < endChannel; c++)
+                {
+                    for (int ih = 0; ih < h; ih++)
+                    {
+                        for (int iw = 0; iw < w; iw++)
+                        {
+                            float diff = contigX[b, c, ih, iw] - mean;
+                            sumVar += diff * diff;
+                        }
+                    }
+                }
+                float invStd = (float)(1.0 / Math.Sqrt(sumVar * invGroupSize + eps));
+
+                // 3. Normalize, scale, bias
+                for (int c = startChannel; c < endChannel; c++)
+                {
+                    float wVal = weight != null ? weight[c] : 1f;
+                    float bVal = bias != null ? bias[c] : 0f;
+
+                    for (int ih = 0; ih < h; ih++)
+                    {
+                        for (int iw = 0; iw < w; iw++)
+                        {
+                            float normVal = (contigX[b, c, ih, iw] - mean) * invStd;
+                            result[b, c, ih, iw] = normVal * wVal + bVal;
+                        }
+                    }
+                }
+            });
+
+            return result;
+        }
+
+        #endregion
     }
 
     public static partial class Tensor
@@ -635,5 +1125,64 @@ namespace ZeroTensor.Core
             int padding = 0,
             int dilation = 1) =>
             TensorOps.Conv2D(input, weight, bias, stride, padding, dilation);
+
+        /// <summary>
+        /// Retrieves embedding vectors from a weight matrix: Output[..., D] = Weight[Indices[...], D].
+        /// </summary>
+        public static Tensor<float> EmbeddingLookup(Tensor<int> indices, Tensor<float> weight) =>
+            TensorOps.EmbeddingLookup(indices, weight);
+
+        /// <summary>
+        /// Applies Rotary Positional Embedding (RoPE) to Query or Key tensors.
+        /// </summary>
+        public static Tensor<float> ApplyRoPE(
+            Tensor<float> x,
+            int startPos = 0,
+            float thetaBase = 10000.0f,
+            bool interleaved = false) =>
+            TensorOps.ApplyRoPE(x, startPos, thetaBase, interleaved);
+
+        /// <summary>
+        /// Max Pooling 2D downsampling.
+        /// </summary>
+        public static Tensor<float> MaxPool2D(
+            Tensor<float> input,
+            int kernelSize,
+            int stride = -1,
+            int padding = 0) =>
+            TensorOps.MaxPool2D(input, kernelSize, stride, padding);
+
+        /// <summary>
+        /// Average Pooling 2D downsampling.
+        /// </summary>
+        public static Tensor<float> AvgPool2D(
+            Tensor<float> input,
+            int kernelSize,
+            int stride = -1,
+            int padding = 0,
+            bool countIncludePad = true) =>
+            TensorOps.AvgPool2D(input, kernelSize, stride, padding, countIncludePad);
+
+        /// <summary>
+        /// Spatial 2D interpolation / resizing (Bilinear or Nearest).
+        /// </summary>
+        public static Tensor<float> Interpolate2D(
+            Tensor<float> input,
+            int outH,
+            int outW,
+            InterpolationMode mode = InterpolationMode.Bilinear,
+            bool alignCorners = false) =>
+            TensorOps.Interpolate2D(input, outH, outW, mode, alignCorners);
+
+        /// <summary>
+        /// Group Normalization across G channel groups.
+        /// </summary>
+        public static Tensor<float> GroupNorm(
+            Tensor<float> x,
+            int numGroups,
+            Tensor<float>? weight = null,
+            Tensor<float>? bias = null,
+            float eps = 1e-5f) =>
+            TensorOps.GroupNorm(x, numGroups, weight, bias, eps);
     }
 }
