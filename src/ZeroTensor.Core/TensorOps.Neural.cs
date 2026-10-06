@@ -1757,6 +1757,283 @@ namespace ZeroTensor.Core
         }
 
         #endregion
+
+        #region Diffusion & Transformer Modulation (AdaLN)
+
+        /// <summary>
+        /// Adaptive Layer Normalization (AdaLN) for Diffusion Transformers (DiT / SANA).
+        /// Modulates normalized features: y = (1 + scale) * LayerNorm(x) + shift.
+        /// </summary>
+        public static Tensor<float> AdaLN(
+            Tensor<float> x,
+            Tensor<float> scale,
+            Tensor<float> shift,
+            float eps = 1e-5f)
+        {
+            if (x == null) throw new ArgumentNullException(nameof(x));
+            if (scale == null) throw new ArgumentNullException(nameof(scale));
+            if (shift == null) throw new ArgumentNullException(nameof(shift));
+
+            var normed = LayerNorm(x, weight: null, bias: null, eps: eps);
+
+            var scaleBroad = scale.Shape == x.Shape ? scale : scale.BroadcastTo(x.Shape);
+            var shiftBroad = shift.Shape == x.Shape ? shift : shift.BroadcastTo(x.Shape);
+
+            var result = new Tensor<float>(x.Shape);
+            int length = x.Length;
+            int vecSize = Vector<float>.Count;
+            var oneVec = new Vector<float>(1.0f);
+
+            if (normed.IsContiguous && scaleBroad.IsContiguous && shiftBroad.IsContiguous)
+            {
+                unsafe
+                {
+                    fixed (float* pNorm = &normed.Storage.GetPinnableReference(normed.Offset))
+                    fixed (float* pScale = &scaleBroad.Storage.GetPinnableReference(scaleBroad.Offset))
+                    fixed (float* pShift = &shiftBroad.Storage.GetPinnableReference(shiftBroad.Offset))
+                    fixed (float* pDst = &result.Storage.GetPinnableReference(result.Offset))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var vn = Unsafe.ReadUnaligned<Vector<float>>(pNorm + i);
+                            var vs = Unsafe.ReadUnaligned<Vector<float>>(pScale + i);
+                            var vb = Unsafe.ReadUnaligned<Vector<float>>(pShift + i);
+
+                            var vOut = (oneVec + vs) * vn + vb;
+                            Unsafe.WriteUnaligned(pDst + i, vOut);
+                        }
+
+                        for (; i < length; i++)
+                        {
+                            pDst[i] = (1.0f + pScale[i]) * pNorm[i] + pShift[i];
+                        }
+                    }
+                }
+                return result;
+            }
+
+            normed.Shape.ForEachCoordinate(coords =>
+            {
+                result[coords] = (1.0f + scaleBroad[coords]) * normed[coords] + shiftBroad[coords];
+            });
+            return result;
+        }
+
+        /// <summary>
+        /// Adaptive Layer Normalization with Zero-initialization gate (AdaLN-Zero) for DiT / SANA blocks.
+        /// Modulates and gates residual features: y = gate * ((1 + scale) * LayerNorm(x) + shift).
+        /// </summary>
+        public static Tensor<float> AdaLNZero(
+            Tensor<float> x,
+            Tensor<float> scale,
+            Tensor<float> shift,
+            Tensor<float> gate,
+            float eps = 1e-5f)
+        {
+            if (x == null) throw new ArgumentNullException(nameof(x));
+            if (scale == null) throw new ArgumentNullException(nameof(scale));
+            if (shift == null) throw new ArgumentNullException(nameof(shift));
+            if (gate == null) throw new ArgumentNullException(nameof(gate));
+
+            var normed = LayerNorm(x, weight: null, bias: null, eps: eps);
+
+            var scaleBroad = scale.Shape == x.Shape ? scale : scale.BroadcastTo(x.Shape);
+            var shiftBroad = shift.Shape == x.Shape ? shift : shift.BroadcastTo(x.Shape);
+            var gateBroad = gate.Shape == x.Shape ? gate : gate.BroadcastTo(x.Shape);
+
+            var result = new Tensor<float>(x.Shape);
+            int length = x.Length;
+            int vecSize = Vector<float>.Count;
+            var oneVec = new Vector<float>(1.0f);
+
+            if (normed.IsContiguous && scaleBroad.IsContiguous && shiftBroad.IsContiguous && gateBroad.IsContiguous)
+            {
+                unsafe
+                {
+                    fixed (float* pNorm = &normed.Storage.GetPinnableReference(normed.Offset))
+                    fixed (float* pScale = &scaleBroad.Storage.GetPinnableReference(scaleBroad.Offset))
+                    fixed (float* pShift = &shiftBroad.Storage.GetPinnableReference(shiftBroad.Offset))
+                    fixed (float* pGate = &gateBroad.Storage.GetPinnableReference(gateBroad.Offset))
+                    fixed (float* pDst = &result.Storage.GetPinnableReference(result.Offset))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var vn = Unsafe.ReadUnaligned<Vector<float>>(pNorm + i);
+                            var vs = Unsafe.ReadUnaligned<Vector<float>>(pScale + i);
+                            var vb = Unsafe.ReadUnaligned<Vector<float>>(pShift + i);
+                            var vg = Unsafe.ReadUnaligned<Vector<float>>(pGate + i);
+
+                            var vOut = vg * ((oneVec + vs) * vn + vb);
+                            Unsafe.WriteUnaligned(pDst + i, vOut);
+                        }
+
+                        for (; i < length; i++)
+                        {
+                            pDst[i] = pGate[i] * ((1.0f + pScale[i]) * pNorm[i] + pShift[i]);
+                        }
+                    }
+                }
+                return result;
+            }
+
+            normed.Shape.ForEachCoordinate(coords =>
+            {
+                result[coords] = gateBroad[coords] * ((1.0f + scaleBroad[coords]) * normed[coords] + shiftBroad[coords]);
+            });
+            return result;
+        }
+
+        #endregion
+
+        #region Depthwise Convolution & Vision Padding
+
+        /// <summary>
+        /// Depthwise 2D Convolution: Applies a distinct spatial convolution filter to each input channel independently.
+        /// Input: [Batch, Channels, InH, InW]
+        /// Weight: [Channels, 1, KernelH, KernelW] (or [Channels, KernelH, KernelW])
+        /// Output: [Batch, Channels, OutH, OutW]
+        /// Bypasses im2col transformation entirely for up to 5-10x higher speed and zero intermediate heap allocation.
+        /// </summary>
+        public static Tensor<float> DepthwiseConv2D(
+            Tensor<float> input,
+            Tensor<float> weight,
+            Tensor<float>? bias = null,
+            int stride = 1,
+            int padding = 0,
+            int dilation = 1)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (weight == null) throw new ArgumentNullException(nameof(weight));
+            if (input.Rank != 4) throw new ArgumentException("Input tensor must have rank 4 [N, C, H, W].", nameof(input));
+            if (weight.Rank != 3 && weight.Rank != 4) throw new ArgumentException("Depthwise weight must have rank 3 [C, KH, KW] or rank 4 [C, 1, KH, KW].", nameof(weight));
+            if (stride <= 0) throw new ArgumentOutOfRangeException(nameof(stride));
+            if (padding < 0) throw new ArgumentOutOfRangeException(nameof(padding));
+            if (dilation <= 0) throw new ArgumentOutOfRangeException(nameof(dilation));
+
+            int batchSize = input.Shape[0];
+            int channels = input.Shape[1];
+            int inH = input.Shape[2];
+            int inW = input.Shape[3];
+
+            int wChannels = weight.Shape[0];
+            if (wChannels != channels)
+            {
+                throw new ArgumentException($"Weight channels ({wChannels}) must equal input channels ({channels}).", nameof(weight));
+            }
+
+            int kernelH = weight.Rank == 4 ? weight.Shape[2] : weight.Shape[1];
+            int kernelW = weight.Rank == 4 ? weight.Shape[3] : weight.Shape[2];
+
+            int effKH = dilation * (kernelH - 1) + 1;
+            int effKW = dilation * (kernelW - 1) + 1;
+
+            int outH = (inH + 2 * padding - effKH) / stride + 1;
+            int outW = (inW + 2 * padding - effKW) / stride + 1;
+
+            if (outH <= 0 || outW <= 0)
+            {
+                throw new InvalidOperationException($"Calculated output dimensions [{outH}, {outW}] are invalid.");
+            }
+
+            if (bias != null && bias.Length != channels)
+            {
+                throw new ArgumentException($"Bias length ({bias.Length}) must equal channels ({channels}).", nameof(bias));
+            }
+
+            var inContig = input.IsContiguous ? input : input.ToContiguous();
+            var wContig = weight.IsContiguous ? weight : weight.ToContiguous();
+            var output = new Tensor<float>(batchSize, channels, outH, outW);
+
+            int inSpatial = inH * inW;
+            int outSpatial = outH * outW;
+            int kernelSpatial = kernelH * kernelW;
+
+            unsafe
+            {
+                fixed (float* pIn = &inContig.Storage.GetPinnableReference(inContig.Offset))
+                fixed (float* pW = &wContig.Storage.GetPinnableReference(wContig.Offset))
+                fixed (float* pOut = &output.Storage.GetPinnableReference(output.Offset))
+                {
+                    IntPtr ptrIn = (IntPtr)pIn;
+                    IntPtr ptrW = (IntPtr)pW;
+                    IntPtr ptrOut = (IntPtr)pOut;
+
+                    Parallel.For(0, batchSize * channels, bc =>
+                    {
+                        float* localIn = (float*)ptrIn;
+                        float* localW = (float*)ptrW;
+                        float* localOut = (float*)ptrOut;
+
+                        int b = bc / channels;
+                        int c = bc % channels;
+
+                        int inBase = (b * channels + c) * inSpatial;
+                        int outBase = (b * channels + c) * outSpatial;
+                        int wBase = c * kernelSpatial;
+                        float bVal = bias != null ? bias[c] : 0f;
+
+                        for (int oh = 0; oh < outH; oh++)
+                        {
+                            int startH = oh * stride - padding;
+                            int outRowOff = outBase + oh * outW;
+
+                            for (int ow = 0; ow < outW; ow++)
+                            {
+                                int startW = ow * stride - padding;
+                                float acc = bVal;
+
+                                for (int kh = 0; kh < kernelH; kh++)
+                                {
+                                    int ih = startH + kh * dilation;
+                                    if (ih < 0 || ih >= inH) continue;
+                                    int inRowOff = inBase + ih * inW;
+                                    int wRowOff = wBase + kh * kernelW;
+
+                                    for (int kw = 0; kw < kernelW; kw++)
+                                    {
+                                        int iw = startW + kw * dilation;
+                                        if (iw >= 0 && iw < inW)
+                                        {
+                                            acc += localIn[inRowOff + iw] * localW[wRowOff + kw];
+                                        }
+                                    }
+                                }
+
+                                localOut[outRowOff + ow] = acc;
+                            }
+                        }
+                    });
+                }
+            }
+
+            return output;
+        }
+
+        /// <summary>
+        /// Pads spatial dimensions (H, W) of a 4D tensor [N, C, H, W] according to PyTorch/ONNX convention.
+        /// Padding format: (padLeft, padRight, padTop, padBottom).
+        /// </summary>
+        public static Tensor<float> Pad2D(
+            Tensor<float> input,
+            int padLeft,
+            int padRight,
+            int padTop,
+            int padBottom,
+            PadMode mode = PadMode.Constant,
+            float value = 0f)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (input.Rank != 4) throw new ArgumentException("Input tensor must have rank 4 [N, C, H, W].", nameof(input));
+
+            int[] padBefore = { 0, 0, padTop, padLeft };
+            int[] padAfter = { 0, 0, padBottom, padRight };
+
+            return Tensor.Pad(input, padBefore, padAfter, mode, value);
+        }
+
+        #endregion
     }
 
     public static partial class Tensor
@@ -1939,5 +2216,51 @@ namespace ZeroTensor.Core
             float thetaBase = 10000.0f,
             bool interleaved = false) =>
             TensorOps.ApplyRoPEInPlace(x, startPos, thetaBase, interleaved);
+
+        /// <summary>
+        /// Adaptive Layer Normalization (AdaLN) for Diffusion Transformers (DiT / SANA).
+        /// </summary>
+        public static Tensor<float> AdaLN(
+            Tensor<float> x,
+            Tensor<float> scale,
+            Tensor<float> shift,
+            float eps = 1e-5f) =>
+            TensorOps.AdaLN(x, scale, shift, eps);
+
+        /// <summary>
+        /// Adaptive Layer Normalization with Zero-initialization gate (AdaLN-Zero) for DiT / SANA blocks.
+        /// </summary>
+        public static Tensor<float> AdaLNZero(
+            Tensor<float> x,
+            Tensor<float> scale,
+            Tensor<float> shift,
+            Tensor<float> gate,
+            float eps = 1e-5f) =>
+            TensorOps.AdaLNZero(x, scale, shift, gate, eps);
+
+        /// <summary>
+        /// Depthwise 2D Convolution without im2col overhead.
+        /// </summary>
+        public static Tensor<float> DepthwiseConv2D(
+            Tensor<float> input,
+            Tensor<float> weight,
+            Tensor<float>? bias = null,
+            int stride = 1,
+            int padding = 0,
+            int dilation = 1) =>
+            TensorOps.DepthwiseConv2D(input, weight, bias, stride, padding, dilation);
+
+        /// <summary>
+        /// Pads spatial dimensions (H, W) of a 4D tensor [N, C, H, W] (padLeft, padRight, padTop, padBottom).
+        /// </summary>
+        public static Tensor<float> Pad2D(
+            Tensor<float> input,
+            int padLeft,
+            int padRight,
+            int padTop,
+            int padBottom,
+            PadMode mode = PadMode.Constant,
+            float value = 0f) =>
+            TensorOps.Pad2D(input, padLeft, padRight, padTop, padBottom, mode, value);
     }
 }

@@ -147,70 +147,122 @@ namespace ZeroTensor.Core
                             {
                                 int nEnd = Math.Min(n0 + BlockN, n);
 
-                                // 2-row register-tiled inner micro-kernel
-                                int i = m0;
-                                for (; i <= mEnd - 2; i += 2)
+                                if (sB1 == 1 && sC1 == 1)
                                 {
-                                    int rowOffA0 = i * sA0;
-                                    int rowOffA1 = (i + 1) * sA0;
-                                    int rowOffC0 = i * sC0;
-                                    int rowOffC1 = (i + 1) * sC0;
-
-                                    for (int p = k0; p < kEnd; p++)
+                                    // 4-row register-accumulated inner micro-kernel
+                                    int i = m0;
+                                    for (; i <= mEnd - 4; i += 4)
                                     {
-                                        float a0 = localA[rowOffA0 + p * sA1] * alpha;
-                                        float a1 = localA[rowOffA1 + p * sA1] * alpha;
-                                        if (a0 == 0f && a1 == 0f) continue;
+                                        int rowOffA0 = i * sA0;
+                                        int rowOffA1 = (i + 1) * sA0;
+                                        int rowOffA2 = (i + 2) * sA0;
+                                        int rowOffA3 = (i + 3) * sA0;
 
-                                        var vA0 = new Vector<float>(a0);
-                                        var vA1 = new Vector<float>(a1);
-                                        int rowOffB = p * sB0;
+                                        int rowOffC0 = i * sC0;
+                                        int rowOffC1 = (i + 1) * sC0;
+                                        int rowOffC2 = (i + 2) * sC0;
+                                        int rowOffC3 = (i + 3) * sC0;
 
                                         int j = n0;
                                         for (; j <= nEnd - vecSize; j += vecSize)
                                         {
-                                            var vB = Unsafe.ReadUnaligned<Vector<float>>(localB + rowOffB + j * sB1);
-                                            var vC0 = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC0 + j * sC1);
-                                            var vC1 = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC1 + j * sC1);
+                                            var vC0 = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC0 + j);
+                                            var vC1 = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC1 + j);
+                                            var vC2 = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC2 + j);
+                                            var vC3 = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC3 + j);
 
-                                            Unsafe.WriteUnaligned(localC + rowOffC0 + j * sC1, vC0 + vA0 * vB);
-                                            Unsafe.WriteUnaligned(localC + rowOffC1 + j * sC1, vC1 + vA1 * vB);
+                                            for (int p = k0; p < kEnd; p++)
+                                            {
+                                                float a0 = localA[rowOffA0 + p * sA1] * alpha;
+                                                float a1 = localA[rowOffA1 + p * sA1] * alpha;
+                                                float a2 = localA[rowOffA2 + p * sA1] * alpha;
+                                                float a3 = localA[rowOffA3 + p * sA1] * alpha;
+
+                                                var vB = Unsafe.ReadUnaligned<Vector<float>>(localB + p * sB0 + j);
+
+                                                vC0 += new Vector<float>(a0) * vB;
+                                                vC1 += new Vector<float>(a1) * vB;
+                                                vC2 += new Vector<float>(a2) * vB;
+                                                vC3 += new Vector<float>(a3) * vB;
+                                            }
+
+                                            Unsafe.WriteUnaligned(localC + rowOffC0 + j, vC0);
+                                            Unsafe.WriteUnaligned(localC + rowOffC1 + j, vC1);
+                                            Unsafe.WriteUnaligned(localC + rowOffC2 + j, vC2);
+                                            Unsafe.WriteUnaligned(localC + rowOffC3 + j, vC3);
                                         }
 
                                         for (; j < nEnd; j++)
                                         {
-                                            float bVal = localB[rowOffB + j * sB1];
-                                            localC[rowOffC0 + j * sC1] += a0 * bVal;
-                                            localC[rowOffC1 + j * sC1] += a1 * bVal;
+                                            float c0 = localC[rowOffC0 + j];
+                                            float c1 = localC[rowOffC1 + j];
+                                            float c2 = localC[rowOffC2 + j];
+                                            float c3 = localC[rowOffC3 + j];
+
+                                            for (int p = k0; p < kEnd; p++)
+                                            {
+                                                float bVal = localB[p * sB0 + j];
+                                                c0 += localA[rowOffA0 + p * sA1] * alpha * bVal;
+                                                c1 += localA[rowOffA1 + p * sA1] * alpha * bVal;
+                                                c2 += localA[rowOffA2 + p * sA1] * alpha * bVal;
+                                                c3 += localA[rowOffA3 + p * sA1] * alpha * bVal;
+                                            }
+
+                                            localC[rowOffC0 + j] = c0;
+                                            localC[rowOffC1 + j] = c1;
+                                            localC[rowOffC2 + j] = c2;
+                                            localC[rowOffC3 + j] = c3;
+                                        }
+                                    }
+
+                                    // Process remaining rows with 1-row register accumulation
+                                    for (; i < mEnd; i++)
+                                    {
+                                        int rowOffA = i * sA0;
+                                        int rowOffC = i * sC0;
+
+                                        int j = n0;
+                                        for (; j <= nEnd - vecSize; j += vecSize)
+                                        {
+                                            var vC = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC + j);
+                                            for (int p = k0; p < kEnd; p++)
+                                            {
+                                                float aVal = localA[rowOffA + p * sA1] * alpha;
+                                                var vB = Unsafe.ReadUnaligned<Vector<float>>(localB + p * sB0 + j);
+                                                vC += new Vector<float>(aVal) * vB;
+                                            }
+                                            Unsafe.WriteUnaligned(localC + rowOffC + j, vC);
+                                        }
+
+                                        for (; j < nEnd; j++)
+                                        {
+                                            float cVal = localC[rowOffC + j];
+                                            for (int p = k0; p < kEnd; p++)
+                                            {
+                                                cVal += localA[rowOffA + p * sA1] * alpha * localB[p * sB0 + j];
+                                            }
+                                            localC[rowOffC + j] = cVal;
                                         }
                                     }
                                 }
-
-                                // Tail cleanup for remaining odd row
-                                for (; i < mEnd; i++)
+                                else
                                 {
-                                    int rowOffA = i * sA0;
-                                    int rowOffC = i * sC0;
-
-                                    for (int p = k0; p < kEnd; p++)
+                                    // Fallback for non-unit column strides
+                                    for (int i = m0; i < mEnd; i++)
                                     {
-                                        float aVal = localA[rowOffA + p * sA1] * alpha;
-                                        if (aVal == 0f) continue;
+                                        int rowOffA = i * sA0;
+                                        int rowOffC = i * sC0;
 
-                                        var vA = new Vector<float>(aVal);
-                                        int rowOffB = p * sB0;
-
-                                        int j = n0;
-                                        for (; j <= nEnd - vecSize; j += vecSize)
+                                        for (int p = k0; p < kEnd; p++)
                                         {
-                                            var vB = Unsafe.ReadUnaligned<Vector<float>>(localB + rowOffB + j * sB1);
-                                            var vC = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC + j * sC1);
-                                            Unsafe.WriteUnaligned(localC + rowOffC + j * sC1, vC + vA * vB);
-                                        }
+                                            float aVal = localA[rowOffA + p * sA1] * alpha;
+                                            if (aVal == 0f) continue;
 
-                                        for (; j < nEnd; j++)
-                                        {
-                                            localC[rowOffC + j * sC1] += aVal * localB[rowOffB + j * sB1];
+                                            int rowOffB = p * sB0;
+                                            for (int j = n0; j < nEnd; j++)
+                                            {
+                                                localC[rowOffC + j * sC1] += aVal * localB[rowOffB + j * sB1];
+                                            }
                                         }
                                     }
                                 }

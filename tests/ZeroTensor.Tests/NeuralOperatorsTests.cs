@@ -860,5 +860,91 @@ namespace ZeroTensor.Tests
             a.Relu_();
             Assert.Equal(0f, a[0]);
         }
+
+        [Fact]
+        public void AdaLN_And_AdaLNZero_Correctness()
+        {
+            // Input: [1, 2, 4]
+            var x = Tensor.FromArray(new float[]
+            {
+                2f, 4f, 6f, 8f,
+                1f, 3f, 5f, 7f
+            }, 1, 2, 4);
+
+            var scale = Tensor.FromArray(new float[] { 0.5f, 0.5f, 0.5f, 0.5f }, 4);
+            var shift = Tensor.FromArray(new float[] { 1f, 1f, 1f, 1f }, 4);
+            var gate = Tensor.FromArray(new float[] { 2f, 2f, 2f, 2f }, 4);
+
+            var yAdaLN = TensorOps.AdaLN(x, scale, shift, eps: 1e-5f);
+            var yAdaLNZero = TensorOps.AdaLNZero(x, scale, shift, gate, eps: 1e-5f);
+
+            // Row 0: mean=5, std = sqrt(5 + 1e-5) ~= 2.236068
+            // normed[0] = (2 - 5) / 2.236068 = -1.34164
+            // AdaLN expected = (1 + 0.5) * (-1.34164) + 1 = -1.01246
+            // AdaLNZero expected = 2 * (-1.01246) = -2.02492
+            float norm0 = (2f - 5f) / (float)Math.Sqrt(5.0 + 1e-5);
+            float expAdaLN0 = (1.0f + 0.5f) * norm0 + 1.0f;
+            float expAdaLNZero0 = 2.0f * expAdaLN0;
+
+            Assert.True(Math.Abs(yAdaLN[0, 0, 0] - expAdaLN0) < 1e-4f);
+            Assert.True(Math.Abs(yAdaLNZero[0, 0, 0] - expAdaLNZero0) < 1e-4f);
+        }
+
+        [Fact]
+        public void DepthwiseConv2D_MatchesManualSpatialFiltering()
+        {
+            // Batch=1, Channels=2, H=4, W=4
+            var input = Tensor.Zeros<float>(1, 2, 4, 4);
+            for (int c = 0; c < 2; c++)
+                for (int h = 0; h < 4; h++)
+                    for (int w = 0; w < 4; w++)
+                        input[0, c, h, w] = (c + 1) * 10f + h * 4 + w;
+
+            // Weight: [2, 1, 3, 3] all ones
+            var weight = Tensor.Ones(2, 1, 3, 3);
+            var bias = Tensor.FromArray(new float[] { 1f, 2f }, 2);
+
+            // Stride=1, Padding=1 -> Output [1, 2, 4, 4]
+            var output = TensorOps.DepthwiseConv2D(input, weight, bias, stride: 1, padding: 1);
+
+            Assert.Equal(new[] { 1, 2, 4, 4 }, output.Shape.Dimensions);
+
+            // Center element at [0, 0, 1, 1]: full 3x3 window around (1, 1) in channel 0
+            // Channel 0 base = 10. Coordinates:
+            // (0,0)=10, (0,1)=11, (0,2)=12
+            // (1,0)=14, (1,1)=15, (1,2)=16
+            // (2,0)=18, (2,1)=19, (2,2)=20
+            // Sum = 10+11+12+14+15+16+18+19+20 = 135
+            // Plus bias = 135 + 1 = 136
+            Assert.Equal(136f, output[0, 0, 1, 1]);
+        }
+
+        [Fact]
+        public void Pad2D_Correctness()
+        {
+            var x = Tensor.FromArray(new float[]
+            {
+                1f, 2f,
+                3f, 4f
+            }, 1, 1, 2, 2);
+
+            // Pad left=1, right=2, top=1, bottom=1 with constant 0
+            var padded = TensorOps.Pad2D(x, padLeft: 1, padRight: 2, padTop: 1, padBottom: 1, mode: PadMode.Constant, value: 0f);
+
+            // Output shape: H = 2 + 1 + 1 = 4; W = 2 + 1 + 2 = 5
+            Assert.Equal(new[] { 1, 1, 4, 5 }, padded.Shape.Dimensions);
+
+            // Center original top-left at (1, 1)
+            Assert.Equal(1f, padded[0, 0, 1, 1]);
+            Assert.Equal(2f, padded[0, 0, 1, 2]);
+            Assert.Equal(3f, padded[0, 0, 2, 1]);
+            Assert.Equal(4f, padded[0, 0, 2, 2]);
+
+            // Border paddings
+            Assert.Equal(0f, padded[0, 0, 0, 0]);
+            Assert.Equal(0f, padded[0, 0, 1, 0]);
+            Assert.Equal(0f, padded[0, 0, 1, 3]);
+            Assert.Equal(0f, padded[0, 0, 1, 4]);
+        }
     }
 }
