@@ -385,5 +385,144 @@ namespace ZeroTensor.Tests
 
             Assert.True(Math.Abs(g1Sum) < 1e-4f);
         }
+
+        [Fact]
+        public void FlashAttentionCpu_MatchesStandardAttention()
+        {
+            // Batch = 1, Heads = 2, Seq = 8, Dim = 16
+            var q = Tensor.Zeros<float>(1, 2, 8, 16);
+            var k = Tensor.Zeros<float>(1, 2, 8, 16);
+            var v = Tensor.Zeros<float>(1, 2, 8, 16);
+
+            for (int i = 0; i < 8; i++)
+            {
+                for (int d = 0; d < 16; d++)
+                {
+                    q[0, 0, i, d] = (i + d) * 0.1f;
+                    k[0, 0, i, d] = (i - d) * 0.05f;
+                    v[0, 0, i, d] = (i * 2 + d) * 0.1f;
+
+                    q[0, 1, i, d] = (i - d) * 0.1f;
+                    k[0, 1, i, d] = (i + d) * 0.05f;
+                    v[0, 1, i, d] = (d - i) * 0.1f;
+                }
+            }
+
+            var expected = TensorOps.ScaledDotProductAttention(q, k, v);
+            var actual = TensorOps.FlashAttentionCpu(q, k, v);
+
+            Assert.Equal(expected.Shape.Dimensions, actual.Shape.Dimensions);
+
+            for (int h = 0; h < 2; h++)
+            {
+                for (int i = 0; i < 8; i++)
+                {
+                    for (int d = 0; d < 16; d++)
+                    {
+                        float diff = Math.Abs(expected[0, h, i, d] - actual[0, h, i, d]);
+                        Assert.True(diff < 1e-4f, $"Mismatch at h={h}, i={i}, d={d}: expected {expected[0, h, i, d]}, actual {actual[0, h, i, d]}");
+                    }
+                }
+            }
+        }
+
+        [Fact]
+        public void Conv1D_BasicExecution()
+        {
+            // Input: [Batch=1, InC=1, L=5]
+            var input = Tensor.FromArray(new float[] { 1f, 2f, 3f, 4f, 5f }, 1, 1, 5);
+            // Weight: [OutC=1, InC=1, K=3]
+            var weight = Tensor.FromArray(new float[] { 1f, 0f, -1f }, 1, 1, 3);
+            var bias = Tensor.FromArray(new float[] { 10f }, 1);
+
+            // Output length = (5 - 3) / 1 + 1 = 3
+            // ol=0: 1*1 + 2*0 + 3*(-1) = -2 + 10 = 8
+            // ol=1: 2*1 + 3*0 + 4*(-1) = -2 + 10 = 8
+            // ol=2: 3*1 + 4*0 + 5*(-1) = -2 + 10 = 8
+            var output = TensorOps.Conv1D(input, weight, bias, stride: 1, padding: 0);
+
+            Assert.Equal(new[] { 1, 1, 3 }, output.Shape.Dimensions);
+            Assert.Equal(8f, output[0, 0, 0]);
+            Assert.Equal(8f, output[0, 0, 1]);
+            Assert.Equal(8f, output[0, 0, 2]);
+        }
+
+        [Fact]
+        public void ConvTranspose2D_BasicExecution()
+        {
+            // Input: [1, 1, 2, 2]
+            var input = Tensor.FromArray(new float[]
+            {
+                1f, 2f,
+                3f, 4f
+            }, 1, 1, 2, 2);
+
+            // Weight: [1, 1, 2, 2]
+            var weight = Tensor.FromArray(new float[]
+            {
+                1f, 1f,
+                1f, 1f
+            }, 1, 1, 2, 2);
+
+            // With stride = 2, output size is (2 - 1)*2 + 2 = 4x4
+            var output = TensorOps.ConvTranspose2D(input, weight, stride: 2, padding: 0);
+
+            Assert.Equal(new[] { 1, 1, 4, 4 }, output.Shape.Dimensions);
+
+            // Top-left 2x2 should be input[0,0] * 1 = 1
+            Assert.Equal(1f, output[0, 0, 0, 0]);
+            Assert.Equal(1f, output[0, 0, 0, 1]);
+            Assert.Equal(1f, output[0, 0, 1, 0]);
+            Assert.Equal(1f, output[0, 0, 1, 1]);
+
+            // Top-right 2x2 should be input[0,1] * 1 = 2
+            Assert.Equal(2f, output[0, 0, 0, 2]);
+            Assert.Equal(2f, output[0, 0, 0, 3]);
+            Assert.Equal(2f, output[0, 0, 1, 2]);
+            Assert.Equal(2f, output[0, 0, 1, 3]);
+
+            // Bottom-right 2x2 should be input[1,1] * 1 = 4
+            Assert.Equal(4f, output[0, 0, 2, 2]);
+            Assert.Equal(4f, output[0, 0, 3, 3]);
+        }
+
+        [Fact]
+        public void InferenceWorkspace_PingPongSwap()
+        {
+            using var ws = new InferenceWorkspace<float>(2, 4);
+
+            var initialInput = Tensor.FromArray(new float[]
+            {
+                1f, 2f, 3f, 4f,
+                5f, 6f, 7f, 8f
+            }, 2, 4);
+
+            ws.Reset(initialInput);
+
+            Assert.Equal(1f, ws.CurrentInput[0, 0]);
+            Assert.Equal(8f, ws.CurrentInput[1, 3]);
+
+            // Simulate Layer 1 forward: CurrentOutput = CurrentInput * 2
+            var inSpan = ws.CurrentInput.AsReadOnlySpan();
+            var outSpan = ws.CurrentOutput.AsSpan();
+            for (int i = 0; i < inSpan.Length; i++) outSpan[i] = inSpan[i] * 2f;
+
+            // Step to Layer 2: buffers swap in O(1)
+            ws.Step();
+
+            Assert.Equal(2f, ws.CurrentInput[0, 0]);
+            Assert.Equal(16f, ws.CurrentInput[1, 3]);
+
+            // Simulate Layer 2 forward: CurrentOutput = CurrentInput + 10
+            inSpan = ws.CurrentInput.AsReadOnlySpan();
+            outSpan = ws.CurrentOutput.AsSpan();
+            for (int i = 0; i < inSpan.Length; i++) outSpan[i] = inSpan[i] + 10f;
+
+            // Step to Layer 3
+            ws.Step();
+
+            Assert.Equal(12f, ws.CurrentInput[0, 0]);
+            Assert.Equal(26f, ws.CurrentInput[1, 3]);
+        }
     }
 }

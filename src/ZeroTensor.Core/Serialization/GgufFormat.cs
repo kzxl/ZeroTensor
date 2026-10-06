@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.MemoryMappedFiles;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Threading.Tasks;
 using ZeroTensor.Core.Storage;
 
 namespace ZeroTensor.Core
@@ -78,6 +80,71 @@ namespace ZeroTensor.Core
             _fp32Tensors = fp32Tensors;
         }
 
+        /// <summary>
+        /// Retrieves a float tensor by name.
+        /// If the tensor is F32, returns the zero-copy memory mapped instance.
+        /// If the tensor is quantized (Q4_0, Q8_0) or F16/BF16, automatically dequantizes it into a new Tensor<float>.
+        /// </summary>
+        public Tensor<float> GetFloatTensor(string tensorName)
+        {
+            if (_fp32Tensors.TryGetValue(tensorName, out var existing))
+            {
+                return existing;
+            }
+
+            var info = _tensorInfos.Find(t => t.Name.Equals(tensorName, StringComparison.OrdinalIgnoreCase));
+            if (info == null)
+            {
+                throw new KeyNotFoundException($"Tensor '{tensorName}' not found in GGUF archive.");
+            }
+
+            var shape = new TensorShape(info.Dimensions);
+            int totalElems = shape.TotalElements;
+            var result = new Tensor<float>(shape);
+
+            using (var accessor = _mmf.CreateViewAccessor(info.AbsoluteOffset, info.ByteSize, MemoryMappedFileAccess.Read))
+            {
+                unsafe
+                {
+                    byte* pRaw = null;
+                    accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref pRaw);
+                    try
+                    {
+                        byte* pBytes = pRaw + accessor.PointerOffset;
+                        fixed (float* pDst = &result.Storage.GetPinnableReference(result.Offset))
+                        {
+                            IntPtr ptrSrc = (IntPtr)pBytes;
+                            IntPtr ptrDst = (IntPtr)pDst;
+
+                            switch (info.Type)
+                            {
+                                case GgmlType.Q4_0:
+                                    GgufDequantizer.DequantizeQ4_0(ptrSrc, ptrDst, totalElems);
+                                    break;
+                                case GgmlType.Q8_0:
+                                    GgufDequantizer.DequantizeQ8_0(ptrSrc, ptrDst, totalElems);
+                                    break;
+                                case GgmlType.F16:
+                                    GgufDequantizer.ConvertF16ToFloat(ptrSrc, ptrDst, totalElems);
+                                    break;
+                                case GgmlType.BF16:
+                                    GgufDequantizer.ConvertBF16ToFloat(ptrSrc, ptrDst, totalElems);
+                                    break;
+                                default:
+                                    throw new NotSupportedException($"Dequantization for GGML type {info.Type} is not supported yet.");
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+                    }
+                }
+            }
+
+            return result;
+        }
+
         public void Dispose()
         {
             foreach (var kvp in _fp32Tensors)
@@ -85,6 +152,130 @@ namespace ZeroTensor.Core
                 kvp.Value.Dispose();
             }
             _lifetime.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// High-performance multi-threaded dequantizer for GGML block quantization formats.
+    /// </summary>
+    public static unsafe class GgufDequantizer
+    {
+        public const int Qk4_0 = 32;
+        public const int Qk8_0 = 32;
+
+        /// <summary>
+        /// Dequantizes GGML Q4_0 blocks (scale + 16 bytes = 32 nibbles) to IEEE 32-bit floats.
+        /// </summary>
+        public static void DequantizeQ4_0(IntPtr ptrSrc, IntPtr ptrDst, int totalElements)
+        {
+            int numBlocks = (totalElements + Qk4_0 - 1) / Qk4_0;
+
+            Parallel.For(0, numBlocks, b =>
+            {
+                byte* pSrc = (byte*)ptrSrc;
+                float* pDst = (float*)ptrDst;
+
+                byte* blockPtr = pSrc + b * 18; // 2 bytes Half scale + 16 bytes nibbles
+                ushort rawScale = Unsafe.ReadUnaligned<ushort>(blockPtr);
+                Half hScale = Unsafe.As<ushort, Half>(ref rawScale);
+                float d = (float)hScale;
+
+                byte* qs = blockPtr + 2;
+                int dstOffset = b * Qk4_0;
+                int remaining = Math.Min(Qk4_0, totalElements - dstOffset);
+
+                for (int j = 0; j < 16; j++)
+                {
+                    byte val = qs[j];
+                    int x0 = (val & 0x0F) - 8;
+                    int x1 = (val >> 4) - 8;
+
+                    if (j < remaining) pDst[dstOffset + j] = x0 * d;
+                    if (j + 16 < remaining) pDst[dstOffset + j + 16] = x1 * d;
+                }
+            });
+        }
+
+        /// <summary>
+        /// Dequantizes GGML Q8_0 blocks (scale + 32 signed bytes) to IEEE 32-bit floats.
+        /// </summary>
+        public static void DequantizeQ8_0(IntPtr ptrSrc, IntPtr ptrDst, int totalElements)
+        {
+            int numBlocks = (totalElements + Qk8_0 - 1) / Qk8_0;
+
+            Parallel.For(0, numBlocks, b =>
+            {
+                byte* pSrc = (byte*)ptrSrc;
+                float* pDst = (float*)ptrDst;
+
+                byte* blockPtr = pSrc + b * 34; // 2 bytes Half scale + 32 bytes signed values
+                ushort rawScale = Unsafe.ReadUnaligned<ushort>(blockPtr);
+                Half hScale = Unsafe.As<ushort, Half>(ref rawScale);
+                float d = (float)hScale;
+
+                sbyte* qs = (sbyte*)(blockPtr + 2);
+                int dstOffset = b * Qk8_0;
+                int remaining = Math.Min(Qk8_0, totalElements - dstOffset);
+
+                for (int j = 0; j < remaining; j++)
+                {
+                    pDst[dstOffset + j] = qs[j] * d;
+                }
+            });
+        }
+
+        /// <summary>
+        /// Converts IEEE 754 16-bit half-precision floats to IEEE 32-bit floats.
+        /// </summary>
+        public static void ConvertF16ToFloat(IntPtr ptrSrc, IntPtr ptrDst, int totalElements)
+        {
+            Parallel.For(0, totalElements, i =>
+            {
+                ushort* src16 = (ushort*)ptrSrc;
+                float* pDst = (float*)ptrDst;
+                ushort raw = src16[i];
+                Half h = Unsafe.As<ushort, Half>(ref raw);
+                pDst[i] = (float)h;
+            });
+        }
+
+        /// <summary>
+        /// Converts Brain Floating Point (BF16) to IEEE 32-bit floats.
+        /// </summary>
+        public static void ConvertBF16ToFloat(IntPtr ptrSrc, IntPtr ptrDst, int totalElements)
+        {
+            Parallel.For(0, totalElements, i =>
+            {
+                ushort* srcBf16 = (ushort*)ptrSrc;
+                float* pDst = (float*)ptrDst;
+                uint bits = (uint)srcBf16[i] << 16;
+                pDst[i] = Unsafe.As<uint, float>(ref bits);
+            });
+        }
+
+        /// <summary>
+        /// Computes the packed byte size for a given GGML data type and element count.
+        /// </summary>
+        public static long ComputeByteSize(GgmlType type, int totalElements)
+        {
+            switch (type)
+            {
+                case GgmlType.F32:
+                case GgmlType.I32:
+                    return (long)totalElements * 4;
+                case GgmlType.F16:
+                case GgmlType.BF16:
+                case GgmlType.I16:
+                    return (long)totalElements * 2;
+                case GgmlType.I8:
+                    return (long)totalElements;
+                case GgmlType.Q4_0:
+                    return ((long)(totalElements + Qk4_0 - 1) / Qk4_0) * 18;
+                case GgmlType.Q8_0:
+                    return ((long)(totalElements + Qk8_0 - 1) / Qk8_0) * 34;
+                default:
+                    return (long)totalElements * 4;
+            }
         }
     }
 
@@ -187,10 +378,10 @@ namespace ZeroTensor.Core
                 info.AbsoluteOffset = dataBaseOffset + (long)info.RelativeOffset;
                 var shape = new TensorShape(info.Dimensions);
                 int elemCount = shape.TotalElements;
+                info.ByteSize = GgufDequantizer.ComputeByteSize(info.Type, elemCount);
 
                 if (info.Type == GgmlType.F32)
                 {
-                    info.ByteSize = (long)elemCount * sizeof(float);
                     var storage = new MemoryMappedStorage<float>(mmf, info.AbsoluteOffset, elemCount, ownsMmf: false, sharedLifetime: lifetime);
                     var strides = TensorStrides.ComputeContiguousStrides(shape);
                     fp32Tensors[info.Name] = new Tensor<float>(storage, 0, shape, strides);

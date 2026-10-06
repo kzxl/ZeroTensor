@@ -35,6 +35,7 @@ namespace ZeroTensor.Benchmarks
             RunVisionConv2DBenchmark();
             RunZeroCopySliceBenchmark();
             RunMemoryAllocationBenchmark();
+            RunGgufDequantizeBenchmark();
 
             Console.WriteLine("\nAll benchmarks completed successfully.");
         }
@@ -212,8 +213,8 @@ namespace ZeroTensor.Benchmarks
 
         private static void RunAttentionBenchmark()
         {
-            Console.WriteLine("--- 6. Attention Benchmark (Scaled Dot-Product Attention) ---");
-            int seqLen = 64;
+            Console.WriteLine("--- 6. Attention Benchmark: Standard SDPA vs FlashAttentionCpu ---");
+            int seqLen = 128;
             int headDim = 64;
 
             var q = Tensor.Ones<float>(seqLen, headDim);
@@ -222,17 +223,36 @@ namespace ZeroTensor.Benchmarks
 
             // Warmup
             var _ = TensorOps.ScaledDotProductAttention(q, k, v);
+            var __ = TensorOps.FlashAttentionCpu(q, k, v);
 
             int iters = 20;
+
+            // 1. Standard SDPA
+            GC.Collect();
+            long startBytes = GC.GetAllocatedBytesForCurrentThread();
             var sw = Stopwatch.StartNew();
             for (int i = 0; i < iters; i++)
             {
                 var attn = TensorOps.ScaledDotProductAttention(q, k, v);
             }
             sw.Stop();
-            double avgMs = sw.Elapsed.TotalMilliseconds / iters;
+            long sdpaAlloc = (GC.GetAllocatedBytesForCurrentThread() - startBytes) / iters;
+            double sdpaMs = sw.Elapsed.TotalMilliseconds / iters;
 
-            Console.WriteLine($"SDPA [Seq={seqLen}, Dim={headDim}]: {avgMs:F2} ms\n");
+            // 2. FlashAttentionCpu (Tiled Online Softmax)
+            GC.Collect();
+            startBytes = GC.GetAllocatedBytesForCurrentThread();
+            sw.Restart();
+            for (int i = 0; i < iters; i++)
+            {
+                var attn = TensorOps.FlashAttentionCpu(q, k, v);
+            }
+            sw.Stop();
+            long flashAlloc = (GC.GetAllocatedBytesForCurrentThread() - startBytes) / iters;
+            double flashMs = sw.Elapsed.TotalMilliseconds / iters;
+
+            Console.WriteLine($"Standard SDPA    : {sdpaMs:F2} ms | Memory Alloc: {sdpaAlloc / 1024.0:F1} KB/op");
+            Console.WriteLine($"FlashAttentionCpu: {flashMs:F2} ms | Memory Alloc: {flashAlloc / 1024.0:F1} KB/op (O(1) memory)\n");
         }
 
         private static void RunVisionConv2DBenchmark()
@@ -317,6 +337,62 @@ namespace ZeroTensor.Benchmarks
             Console.WriteLine($"Standard `new Tensor` : {stdMs:F2} ms | Total GC Allocated: {standardAlloc / (1024.0 * 1024.0):F2} MB");
             Console.WriteLine($"TensorPool Rent/Return: {poolMs:F2} ms | Total GC Allocated: {pooledAlloc / (1024.0 * 1024.0):F2} MB | Speedup: {stdMs / poolMs:F2}x");
             Console.WriteLine($"GC Reduction Ratio    : {(double)standardAlloc / Math.Max(1, pooledAlloc):F1}x lower heap footprint\n");
+        }
+
+        private static unsafe void RunGgufDequantizeBenchmark()
+        {
+            Console.WriteLine("--- 10. GGUF Quantization Dequantize Throughput (N = 1,000,000 weights) ---");
+            int totalElems = 1_000_000;
+            int numBlocks = (totalElems + 31) / 32;
+
+            // Q4_0: 18 bytes per block
+            byte[] q4Data = new byte[numBlocks * 18];
+            for (int i = 0; i < q4Data.Length; i++) q4Data[i] = (byte)(i % 255);
+
+            // Q8_0: 34 bytes per block
+            byte[] q8Data = new byte[numBlocks * 34];
+            for (int i = 0; i < q8Data.Length; i++) q8Data[i] = (byte)(i % 255);
+
+            float[] dst = new float[totalElems];
+            int iters = 100;
+
+            fixed (byte* pQ4 = q4Data)
+            fixed (byte* pQ8 = q8Data)
+            fixed (float* pDst = dst)
+            {
+                IntPtr ptrQ4 = (IntPtr)pQ4;
+                IntPtr ptrQ8 = (IntPtr)pQ8;
+                IntPtr ptrDst = (IntPtr)pDst;
+
+                // Warmup
+                GgufDequantizer.DequantizeQ4_0(ptrQ4, ptrDst, totalElems);
+                GgufDequantizer.DequantizeQ8_0(ptrQ8, ptrDst, totalElems);
+
+                // Benchmark Q4_0
+                var sw = Stopwatch.StartNew();
+                for (int i = 0; i < iters; i++)
+                {
+                    GgufDequantizer.DequantizeQ4_0(ptrQ4, ptrDst, totalElems);
+                }
+                sw.Stop();
+                double q4Ms = sw.Elapsed.TotalMilliseconds / iters;
+                double q4ThroughputMElems = (totalElems / (q4Ms / 1000.0)) / 1e6;
+                double q4Gbps = ((numBlocks * 18) / (q4Ms / 1000.0)) / (1024 * 1024 * 1024);
+
+                // Benchmark Q8_0
+                sw.Restart();
+                for (int i = 0; i < iters; i++)
+                {
+                    GgufDequantizer.DequantizeQ8_0(ptrQ8, ptrDst, totalElems);
+                }
+                sw.Stop();
+                double q8Ms = sw.Elapsed.TotalMilliseconds / iters;
+                double q8ThroughputMElems = (totalElems / (q8Ms / 1000.0)) / 1e6;
+                double q8Gbps = ((numBlocks * 34) / (q8Ms / 1000.0)) / (1024 * 1024 * 1024);
+
+                Console.WriteLine($"Q4_0 Dequantize: {q4Ms:F3} ms | Throughput: {q4ThroughputMElems:F1} M weights/sec ({q4Gbps:F2} GB/s)");
+                Console.WriteLine($"Q8_0 Dequantize: {q8Ms:F3} ms | Throughput: {q8ThroughputMElems:F1} M weights/sec ({q8Gbps:F2} GB/s)\n");
+            }
         }
     }
 }

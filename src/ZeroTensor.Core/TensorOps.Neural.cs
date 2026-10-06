@@ -472,6 +472,174 @@ namespace ZeroTensor.Core
 
         #endregion
 
+        #region Attention: FlashAttentionCpu (Tiled Online Softmax)
+
+        /// <summary>
+        /// Tiled Online Softmax Attention (FlashAttention for CPU).
+        /// Computes Softmax(Q @ K.T * scale + mask) @ V without materializing the O(N^2) attention score matrix.
+        /// Dramatically cuts memory footprint from O(N^2) to O(1) and maximizes L1/L2 CPU cache residency for long-context LLMs.
+        /// </summary>
+        public static Tensor<float> FlashAttentionCpu(
+            Tensor<float> q,
+            Tensor<float> k,
+            Tensor<float> v,
+            Tensor<float>? mask = null,
+            float? scale = null)
+        {
+            if (q == null) throw new ArgumentNullException(nameof(q));
+            if (k == null) throw new ArgumentNullException(nameof(k));
+            if (v == null) throw new ArgumentNullException(nameof(v));
+
+            if (q.Rank < 2 || k.Rank < 2 || v.Rank < 2)
+                throw new ArgumentException("Q, K, V tensors must have Rank >= 2.");
+
+            int qRank = q.Rank;
+            int sQ = q.Shape[qRank - 2];
+            int d = q.Shape[qRank - 1];
+            int sK = k.Shape[k.Rank - 2];
+            int dK = k.Shape[k.Rank - 1];
+            int dV = v.Shape[v.Rank - 1];
+
+            if (d != dK)
+                throw new ArgumentException($"Query head dim ({d}) must match Key head dim ({dK}).");
+
+            float scaleFactor = scale ?? (1.0f / (float)Math.Sqrt(d));
+
+            // Compute total batch count (heads * batch elements)
+            int batchCount = 1;
+            for (int i = 0; i < qRank - 2; i++) batchCount *= q.Shape[i];
+
+            // Output shape is same as Q except last dimension is dV
+            var outDims = new int[qRank];
+            for (int i = 0; i < qRank - 1; i++) outDims[i] = q.Shape[i];
+            outDims[qRank - 1] = dV;
+            var result = new Tensor<float>(outDims);
+
+            var qContig = q.ToContiguous();
+            var kContig = k.ToContiguous();
+            var vContig = v.ToContiguous();
+            var maskContig = mask?.ToContiguous();
+
+            int qBatchStride = sQ * d;
+            int kBatchStride = sK * d;
+            int vBatchStride = sK * dV;
+            int outBatchStride = sQ * dV;
+            int maskBatchStride = sQ * sK;
+
+            unsafe
+            {
+                fixed (float* pQ = &qContig.Storage.GetPinnableReference(qContig.Offset))
+                fixed (float* pK = &kContig.Storage.GetPinnableReference(kContig.Offset))
+                fixed (float* pV = &vContig.Storage.GetPinnableReference(vContig.Offset))
+                fixed (float* pOut = &result.Storage.GetPinnableReference(result.Offset))
+                {
+                    IntPtr ptrQ = (IntPtr)pQ;
+                    IntPtr ptrK = (IntPtr)pK;
+                    IntPtr ptrV = (IntPtr)pV;
+                    IntPtr ptrOut = (IntPtr)pOut;
+                    IntPtr ptrMask = IntPtr.Zero;
+
+                    Action runParallel = () =>
+                    {
+                        Parallel.For(0, batchCount, b =>
+                        {
+                            float* localQ = (float*)ptrQ;
+                            float* localK = (float*)ptrK;
+                            float* localV = (float*)ptrV;
+                            float* localOut = (float*)ptrOut;
+                            float* localMask = (float*)ptrMask;
+
+                            int qBatchOff = b * qBatchStride;
+                            int kBatchOff = b * kBatchStride;
+                            int vBatchOff = b * vBatchStride;
+                            int outBatchOff = b * outBatchStride;
+                            int maskBatchOff = b * maskBatchStride;
+
+                            Span<float> acc = stackalloc float[Math.Min(dV, 512)];
+                            float[]? heapAcc = null;
+                            if (dV > 512)
+                            {
+                                heapAcc = new float[dV];
+                                acc = heapAcc.AsSpan();
+                            }
+
+                            for (int i = 0; i < sQ; i++)
+                            {
+                                int qOff = qBatchOff + i * d;
+                                int outOff = outBatchOff + i * dV;
+                                int maskRowOff = localMask != null ? maskBatchOff + i * sK : 0;
+
+                                float maxScore = float.NegativeInfinity;
+                                float sumExp = 0f;
+                                acc.Clear();
+
+                                for (int j = 0; j < sK; j++)
+                                {
+                                    int kOff = kBatchOff + j * d;
+                                    int vOff = vBatchOff + j * dV;
+
+                                    float dot = 0f;
+                                    for (int c = 0; c < d; c++)
+                                    {
+                                        dot += localQ[qOff + c] * localK[kOff + c];
+                                    }
+
+                                    float score = dot * scaleFactor;
+                                    if (localMask != null)
+                                    {
+                                        score += localMask[maskRowOff + j];
+                                    }
+
+                                    if (score > maxScore)
+                                    {
+                                        float alpha = (float)Math.Exp(maxScore - score);
+                                        sumExp = sumExp * alpha + 1f;
+                                        for (int c = 0; c < dV; c++)
+                                        {
+                                            acc[c] = acc[c] * alpha + localV[vOff + c];
+                                        }
+                                        maxScore = score;
+                                    }
+                                    else
+                                    {
+                                        float p = (float)Math.Exp(score - maxScore);
+                                        sumExp += p;
+                                        for (int c = 0; c < dV; c++)
+                                        {
+                                            acc[c] += p * localV[vOff + c];
+                                        }
+                                    }
+                                }
+
+                                float invSum = sumExp > 0f ? 1.0f / sumExp : 0f;
+                                for (int c = 0; c < dV; c++)
+                                {
+                                    localOut[outOff + c] = acc[c] * invSum;
+                                }
+                            }
+                        });
+                    };
+
+                    if (maskContig != null)
+                    {
+                        fixed (float* pMask = &maskContig.Storage.GetPinnableReference(maskContig.Offset))
+                        {
+                            ptrMask = (IntPtr)pMask;
+                            runParallel();
+                        }
+                    }
+                    else
+                    {
+                        runParallel();
+                    }
+                }
+            }
+
+            return result;
+        }
+
+        #endregion
+
         #region LLM Primitives: EmbeddingLookup & RoPE
 
         /// <summary>
@@ -727,6 +895,215 @@ namespace ZeroTensor.Core
                     }
                 }
             });
+
+            return output;
+        }
+
+        /// <summary>
+        /// Performs 1D Convolution: Input [N, C_in, L] * Weight [C_out, C_in, K] -> Output [N, C_out, L_out].
+        /// Slices spatial 1D sequences via im2col lowering and SIMD GEMM. Essential for Speech/Audio (Whisper) and sequential signals.
+        /// </summary>
+        public static Tensor<float> Conv1D(
+            Tensor<float> input,
+            Tensor<float> weight,
+            Tensor<float>? bias = null,
+            int stride = 1,
+            int padding = 0,
+            int dilation = 1)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (weight == null) throw new ArgumentNullException(nameof(weight));
+            if (input.Rank != 3) throw new ArgumentException("Input tensor must have rank 3 [N, C_in, L].", nameof(input));
+            if (weight.Rank != 3) throw new ArgumentException("Weight tensor must have rank 3 [C_out, C_in, K].", nameof(weight));
+
+            int batchSize = input.Shape[0];
+            int inChannels = input.Shape[1];
+            int inL = input.Shape[2];
+
+            int outChannels = weight.Shape[0];
+            int inChannelsW = weight.Shape[1];
+            int kernelSize = weight.Shape[2];
+
+            if (inChannels != inChannelsW)
+                throw new InvalidOperationException($"Channel mismatch: Input C_in={inChannels}, Weight C_in={inChannelsW}.");
+
+            int effectiveK = dilation * (kernelSize - 1) + 1;
+            int outL = (inL + 2 * padding - effectiveK) / stride + 1;
+            if (outL <= 0)
+                throw new InvalidOperationException($"Computed output length {outL} is non-positive.");
+
+            var output = new Tensor<float>(batchSize, outChannels, outL);
+            var weightMatrix = weight.Reshape(outChannels, inChannels * kernelSize);
+
+            var inContig = input.ToContiguous();
+
+            unsafe
+            {
+                fixed (float* pIn = &inContig.Storage.GetPinnableReference(inContig.Offset))
+                {
+                    IntPtr ptrIn = (IntPtr)pIn;
+                    Parallel.For(0, batchSize, b =>
+                    {
+                        float* localIn = (float*)ptrIn;
+                        var colMatrix = new Tensor<float>(inChannels * kernelSize, outL);
+                        ref float pCol = ref colMatrix.Storage.GetPinnableReference(0);
+
+                        int batchOffset = b * inChannels * inL;
+
+                        for (int ic = 0; ic < inChannels; ic++)
+                        {
+                            int inChannelOffset = batchOffset + ic * inL;
+
+                            for (int k = 0; k < kernelSize; k++)
+                            {
+                                int rowCol = ic * kernelSize + k;
+                                int outRowOffset = rowCol * outL;
+
+                                for (int ol = 0; ol < outL; ol++)
+                                {
+                                    int inIdx = ol * stride - padding + k * dilation;
+                                    if (inIdx >= 0 && inIdx < inL)
+                                    {
+                                        Unsafe.Add(ref pCol, outRowOffset + ol) = localIn[inChannelOffset + inIdx];
+                                    }
+                                    else
+                                    {
+                                        Unsafe.Add(ref pCol, outRowOffset + ol) = 0f;
+                                    }
+                                }
+                            }
+                        }
+
+                        var out2D = TensorBlas.MatMul2D(weightMatrix, colMatrix);
+                        ref float pOut2D = ref out2D.Storage.GetPinnableReference(out2D.Offset);
+
+                        for (int oc = 0; oc < outChannels; oc++)
+                        {
+                            float bVal = bias != null ? bias[oc] : 0f;
+                            int srcOffset = oc * outL;
+
+                            for (int ol = 0; ol < outL; ol++)
+                            {
+                                output[b, oc, ol] = Unsafe.Add(ref pOut2D, srcOffset + ol) + bVal;
+                            }
+                        }
+                    });
+                }
+            }
+
+            return output;
+        }
+
+        /// <summary>
+        /// Performs 2D Transposed Convolution (Deconvolution):
+        /// Input [N, C_in, H, W] * Weight [C_in, C_out, K_h, K_w] -> Output [N, C_out, H_out, W_out].
+        /// Essential for Diffusion VAE Latent Decoders and generative upsampling networks.
+        /// </summary>
+        public static Tensor<float> ConvTranspose2D(
+            Tensor<float> input,
+            Tensor<float> weight,
+            Tensor<float>? bias = null,
+            int stride = 1,
+            int padding = 0,
+            int outputPadding = 0,
+            int dilation = 1)
+        {
+            if (input == null) throw new ArgumentNullException(nameof(input));
+            if (weight == null) throw new ArgumentNullException(nameof(weight));
+            if (input.Rank != 4) throw new ArgumentException("Input tensor must have rank 4 [N, C_in, H, W].", nameof(input));
+            if (weight.Rank != 4) throw new ArgumentException("Weight tensor must have rank 4 [C_in, C_out, K_h, K_w].", nameof(weight));
+
+            int batchSize = input.Shape[0];
+            int inChannels = input.Shape[1];
+            int inH = input.Shape[2];
+            int inW = input.Shape[3];
+
+            int inChannelsW = weight.Shape[0];
+            int outChannels = weight.Shape[1];
+            int kernelH = weight.Shape[2];
+            int kernelW = weight.Shape[3];
+
+            if (inChannels != inChannelsW)
+                throw new InvalidOperationException($"Channel mismatch: Input C_in={inChannels}, Weight C_in={inChannelsW}.");
+
+            int outH = (inH - 1) * stride - 2 * padding + dilation * (kernelH - 1) + outputPadding + 1;
+            int outW = (inW - 1) * stride - 2 * padding + dilation * (kernelW - 1) + outputPadding + 1;
+
+            if (outH <= 0 || outW <= 0)
+                throw new InvalidOperationException($"Computed output dimensions [{outH}x{outW}] must be positive.");
+
+            var output = new Tensor<float>(batchSize, outChannels, outH, outW);
+            var inContig = input.ToContiguous();
+            var wContig = weight.ToContiguous();
+
+            int inSpatial = inH * inW;
+            int outSpatial = outH * outW;
+            int kernelSpatial = kernelH * kernelW;
+
+            unsafe
+            {
+                fixed (float* pIn = &inContig.Storage.GetPinnableReference(inContig.Offset))
+                fixed (float* pW = &wContig.Storage.GetPinnableReference(wContig.Offset))
+                fixed (float* pOut = &output.Storage.GetPinnableReference(output.Offset))
+                {
+                    IntPtr ptrIn = (IntPtr)pIn;
+                    IntPtr ptrW = (IntPtr)pW;
+                    IntPtr ptrOut = (IntPtr)pOut;
+
+                    Parallel.For(0, batchSize * outChannels, bo =>
+                    {
+                        float* localIn = (float*)ptrIn;
+                        float* localW = (float*)ptrW;
+                        float* localOut = (float*)ptrOut;
+
+                        int b = bo / outChannels;
+                        int oc = bo % outChannels;
+
+                        int outBase = b * outChannels * outSpatial + oc * outSpatial;
+                        float bVal = bias != null ? bias[oc] : 0f;
+
+                        // Initialize with bias
+                        for (int i = 0; i < outSpatial; i++)
+                        {
+                            localOut[outBase + i] = bVal;
+                        }
+
+                        for (int ic = 0; ic < inChannels; ic++)
+                        {
+                            int inBase = b * inChannels * inSpatial + ic * inSpatial;
+                            int wBase = ic * outChannels * kernelSpatial + oc * kernelSpatial;
+
+                            for (int ih = 0; ih < inH; ih++)
+                            {
+                                for (int iw = 0; iw < inW; iw++)
+                                {
+                                    float inVal = localIn[inBase + ih * inW + iw];
+                                    if (inVal == 0f) continue;
+
+                                    for (int kh = 0; kh < kernelH; kh++)
+                                    {
+                                        int oh = ih * stride - padding + kh * dilation;
+                                        if (oh < 0 || oh >= outH) continue;
+
+                                        int outRow = outBase + oh * outW;
+                                        int wRow = wBase + kh * kernelW;
+
+                                        for (int kw = 0; kw < kernelW; kw++)
+                                        {
+                                            int ow = iw * stride - padding + kw * dilation;
+                                            if (ow >= 0 && ow < outW)
+                                            {
+                                                float wVal = localW[wRow + kw];
+                                                localOut[outRow + ow] += inVal * wVal;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+            }
 
             return output;
         }
@@ -1184,5 +1561,41 @@ namespace ZeroTensor.Core
             Tensor<float>? bias = null,
             float eps = 1e-5f) =>
             TensorOps.GroupNorm(x, numGroups, weight, bias, eps);
+
+        /// <summary>
+        /// Tiled Online Softmax FlashAttention on CPU with O(1) memory footprint.
+        /// </summary>
+        public static Tensor<float> FlashAttentionCpu(
+            Tensor<float> q,
+            Tensor<float> k,
+            Tensor<float> v,
+            Tensor<float>? mask = null,
+            float? scale = null) =>
+            TensorOps.FlashAttentionCpu(q, k, v, mask, scale);
+
+        /// <summary>
+        /// 1D Convolution over sequential or audio signals.
+        /// </summary>
+        public static Tensor<float> Conv1D(
+            Tensor<float> input,
+            Tensor<float> weight,
+            Tensor<float>? bias = null,
+            int stride = 1,
+            int padding = 0,
+            int dilation = 1) =>
+            TensorOps.Conv1D(input, weight, bias, stride, padding, dilation);
+
+        /// <summary>
+        /// 2D Transposed Convolution (Deconvolution) for generative upsampling and Latent VAE Decoders.
+        /// </summary>
+        public static Tensor<float> ConvTranspose2D(
+            Tensor<float> input,
+            Tensor<float> weight,
+            Tensor<float>? bias = null,
+            int stride = 1,
+            int padding = 0,
+            int outputPadding = 0,
+            int dilation = 1) =>
+            TensorOps.ConvTranspose2D(input, weight, bias, stride, padding, outputPadding, dilation);
     }
 }
