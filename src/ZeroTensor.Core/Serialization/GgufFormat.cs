@@ -39,6 +39,7 @@ namespace ZeroTensor.Core
 
     /// <summary>
     /// Metadata descriptor for a tensor stored within a GGUF container.
+    /// Represents raw tensor storage metadata at ZeroPlatform Layer 2 (Tensor Substrate).
     /// </summary>
     public sealed class GgufTensorInfo
     {
@@ -51,8 +52,14 @@ namespace ZeroTensor.Core
     }
 
     /// <summary>
-    /// High-level memory-mapped container for GGUF model files.
-    /// Retains shared file mapping lifetime and offers instant access to model weights.
+    /// High-level memory-mapped reader and dequantizer for GGUF model files (ZeroPlatform Layer 2).
+    /// Retains shared file mapping lifetime and offers direct access to dequantized model weights.
+    /// <para>
+    /// <b>Architectural Boundary:</b> At Layer 2 (ZeroTensor), this class functions strictly as a binary tensor
+    /// container parser and raw dequantization engine. It intentionally does NOT handle tokenizers (BPE/SentencePiece),
+    /// vocabulary mappings, prompt formatting, or transformer execution graphs. High-level LLM execution and
+    /// inference orchestration belong to Layer 4 (<c>ZeroLlm</c>).
+    /// </para>
     /// </summary>
     public sealed class GgufArchive : IDisposable
     {

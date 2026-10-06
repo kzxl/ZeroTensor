@@ -8,6 +8,12 @@ namespace ZeroTensor.Core
     /// Static execution workspace providing zero-allocation ping-pong double buffering
     /// across iterative neural network layers (Transformer Decoders, Diffusion DiT blocks).
     /// Eliminates garbage collection pressure entirely during autoregressive or diffusion step loops.
+    /// <para>
+    /// <b>Architectural Boundary:</b> In the ZeroPlatform ecosystem, this class is a Layer 2 (Tensor Substrate)
+    /// primitive designed for sequential ping-pong memory reuse between repeating layers. It intentionally does
+    /// NOT perform whole-graph static memory planning, topological node scheduling, or cross-operator lifecycle
+    /// analysis; those higher-level DAG execution capabilities belong to Layer 3 (<c>ZeroInference.MemoryPlanner</c>).
+    /// </para>
     /// </summary>
     public sealed class InferenceWorkspace<T> : IDisposable where T : unmanaged, IEquatable<T>
     {
