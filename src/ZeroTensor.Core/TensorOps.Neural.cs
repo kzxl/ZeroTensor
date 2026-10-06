@@ -412,6 +412,163 @@ namespace ZeroTensor.Core
 
         #endregion
 
+        #region Activations: SwiGLU & GeGLU (Fused Streaming Kernels)
+
+        /// <summary>
+        /// Fused SwiGLU (Swish Gated Linear Unit): y = SiLU(gate) * up = (gate / (1 + exp(-gate))) * up.
+        /// Evaluated in a single-pass streaming kernel with zero intermediate buffer allocations.
+        /// Essential for high-throughput LLaMA 2/3, Mistral, Qwen, DeepSeek, and Mixtral feed-forward networks.
+        /// </summary>
+        public static Tensor<float> SwiGLU(Tensor<float> gate, Tensor<float> up)
+        {
+            if (gate == null) throw new ArgumentNullException(nameof(gate));
+            if (up == null) throw new ArgumentNullException(nameof(up));
+            if (!gate.Shape.Equals(up.Shape))
+                throw new ArgumentException($"Gate shape ({gate.Shape}) and Up shape ({up.Shape}) must match exactly for SwiGLU.");
+
+            var contigGate = gate.IsContiguous ? gate : gate.ToContiguous();
+            var contigUp = up.IsContiguous ? up : up.ToContiguous();
+
+            var result = new Tensor<float>(contigGate.Shape);
+            int len = contigGate.Length;
+
+            unsafe
+            {
+                fixed (float* pG = &contigGate.Storage.GetPinnableReference(contigGate.Offset))
+                fixed (float* pU = &contigUp.Storage.GetPinnableReference(contigUp.Offset))
+                fixed (float* pDst = &result.Storage.GetPinnableReference(result.Offset))
+                {
+                    IntPtr ptrG = (IntPtr)pG;
+                    IntPtr ptrU = (IntPtr)pU;
+                    IntPtr ptrDst = (IntPtr)pDst;
+
+                    int chunkSize = 2048;
+                    int numChunks = (len + chunkSize - 1) / chunkSize;
+
+                    Parallel.For(0, numChunks, chunkIdx =>
+                    {
+                        float* localG = (float*)ptrG;
+                        float* localU = (float*)ptrU;
+                        float* localDst = (float*)ptrDst;
+
+                        int start = chunkIdx * chunkSize;
+                        int count = Math.Min(chunkSize, len - start);
+
+                        for (int i = 0; i < count; i++)
+                        {
+                            int idx = start + i;
+                            float g = localG[idx];
+                            float u = localU[idx];
+                            float siluG = g / (1.0f + (float)Math.Exp(-g));
+                            localDst[idx] = siluG * u;
+                        }
+                    });
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Single-tensor Fused SwiGLU: splits tensor along <paramref name="dim"/> into [gate, up] and computes SwiGLU(gate, up).
+        /// </summary>
+        public static Tensor<float> SwiGLU(Tensor<float> x, int dim = -1)
+        {
+            if (x == null) throw new ArgumentNullException(nameof(x));
+            int ax = dim < 0 ? dim + x.Rank : dim;
+            if (ax < 0 || ax >= x.Rank) throw new ArgumentOutOfRangeException(nameof(dim));
+
+            int totalDim = x.Shape[ax];
+            if (totalDim % 2 != 0)
+                throw new ArgumentException($"Target dimension {ax} size ({totalDim}) must be even to split into gate and up projections.");
+
+            int half = totalDim / 2;
+            var gate = x.Slice(ax, 0, half);
+            var up = x.Slice(ax, half, half);
+            return SwiGLU(gate, up);
+        }
+
+        /// <summary>
+        /// Fused GeGLU (Gaussian Error Gated Linear Unit): y = GELU(gate) * up.
+        /// Uses fast tanh approximation: GELU(x) = 0.5 * x * (1 + tanh(sqrt(2/pi) * (x + 0.044715 * x^3))).
+        /// Evaluated in a single-pass streaming kernel with zero intermediate buffer allocations.
+        /// Essential for Gemma, PaLM, and Diffusion Transformer (DiT / SANA) MLP blocks.
+        /// </summary>
+        public static Tensor<float> GeGLU(Tensor<float> gate, Tensor<float> up)
+        {
+            if (gate == null) throw new ArgumentNullException(nameof(gate));
+            if (up == null) throw new ArgumentNullException(nameof(up));
+            if (!gate.Shape.Equals(up.Shape))
+                throw new ArgumentException($"Gate shape ({gate.Shape}) and Up shape ({up.Shape}) must match exactly for GeGLU.");
+
+            var contigGate = gate.IsContiguous ? gate : gate.ToContiguous();
+            var contigUp = up.IsContiguous ? up : up.ToContiguous();
+
+            var result = new Tensor<float>(contigGate.Shape);
+            int len = contigGate.Length;
+
+            const float sqrt2OverPi = 0.7978845608028654f;
+            const float geluCoeff = 0.044715f;
+
+            unsafe
+            {
+                fixed (float* pG = &contigGate.Storage.GetPinnableReference(contigGate.Offset))
+                fixed (float* pU = &contigUp.Storage.GetPinnableReference(contigUp.Offset))
+                fixed (float* pDst = &result.Storage.GetPinnableReference(result.Offset))
+                {
+                    IntPtr ptrG = (IntPtr)pG;
+                    IntPtr ptrU = (IntPtr)pU;
+                    IntPtr ptrDst = (IntPtr)pDst;
+
+                    int chunkSize = 2048;
+                    int numChunks = (len + chunkSize - 1) / chunkSize;
+
+                    Parallel.For(0, numChunks, chunkIdx =>
+                    {
+                        float* localG = (float*)ptrG;
+                        float* localU = (float*)ptrU;
+                        float* localDst = (float*)ptrDst;
+
+                        int start = chunkIdx * chunkSize;
+                        int count = Math.Min(chunkSize, len - start);
+
+                        for (int i = 0; i < count; i++)
+                        {
+                            int idx = start + i;
+                            float g = localG[idx];
+                            float u = localU[idx];
+                            float inner = sqrt2OverPi * (g + geluCoeff * g * g * g);
+                            float geluG = 0.5f * g * (1.0f + (float)Math.Tanh(inner));
+                            localDst[idx] = geluG * u;
+                        }
+                    });
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// Single-tensor Fused GeGLU: splits tensor along <paramref name="dim"/> into [gate, up] and computes GeGLU(gate, up).
+        /// </summary>
+        public static Tensor<float> GeGLU(Tensor<float> x, int dim = -1)
+        {
+            if (x == null) throw new ArgumentNullException(nameof(x));
+            int ax = dim < 0 ? dim + x.Rank : dim;
+            if (ax < 0 || ax >= x.Rank) throw new ArgumentOutOfRangeException(nameof(dim));
+
+            int totalDim = x.Shape[ax];
+            if (totalDim % 2 != 0)
+                throw new ArgumentException($"Target dimension {ax} size ({totalDim}) must be even to split into gate and up projections.");
+
+            int half = totalDim / 2;
+            var gate = x.Slice(ax, 0, half);
+            var up = x.Slice(ax, half, half);
+            return GeGLU(gate, up);
+        }
+
+        #endregion
+
         #region Attention: ScaledDotProductAttention (SDPA)
 
         /// <summary>
@@ -1597,5 +1754,29 @@ namespace ZeroTensor.Core
             int outputPadding = 0,
             int dilation = 1) =>
             TensorOps.ConvTranspose2D(input, weight, bias, stride, padding, outputPadding, dilation);
+
+        /// <summary>
+        /// Fused SwiGLU: y = SiLU(gate) * up.
+        /// </summary>
+        public static Tensor<float> SwiGLU(Tensor<float> gate, Tensor<float> up) =>
+            TensorOps.SwiGLU(gate, up);
+
+        /// <summary>
+        /// Single-tensor Fused SwiGLU: splits tensor along dimension into [gate, up] and computes SwiGLU(gate, up).
+        /// </summary>
+        public static Tensor<float> SwiGLU(Tensor<float> x, int dim = -1) =>
+            TensorOps.SwiGLU(x, dim);
+
+        /// <summary>
+        /// Fused GeGLU: y = GELU(gate) * up.
+        /// </summary>
+        public static Tensor<float> GeGLU(Tensor<float> gate, Tensor<float> up) =>
+            TensorOps.GeGLU(gate, up);
+
+        /// <summary>
+        /// Single-tensor Fused GeGLU: splits tensor along dimension into [gate, up] and computes GeGLU(gate, up).
+        /// </summary>
+        public static Tensor<float> GeGLU(Tensor<float> x, int dim = -1) =>
+            TensorOps.GeGLU(x, dim);
     }
 }

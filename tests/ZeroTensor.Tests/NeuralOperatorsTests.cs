@@ -524,5 +524,136 @@ namespace ZeroTensor.Tests
             Assert.Equal(12f, ws.CurrentInput[0, 0]);
             Assert.Equal(26f, ws.CurrentInput[1, 3]);
         }
+
+        [Fact]
+        public void SwiGLU_TwoTensors_Correctness()
+        {
+            var gate = Tensor.FromArray(new float[] { 0f, 1f, -1f, 2f }, 2, 2);
+            var up = Tensor.FromArray(new float[] { 3f, 4f, 5f, 6f }, 2, 2);
+
+            var result = Tensor.SwiGLU(gate, up);
+
+            // Manual calculation: silu(g) * u = (g / (1 + exp(-g))) * u
+            for (int r = 0; r < 2; r++)
+            {
+                for (int c = 0; c < 2; c++)
+                {
+                    float g = gate[r, c];
+                    float u = up[r, c];
+                    float expected = (g / (1.0f + (float)Math.Exp(-g))) * u;
+                    Assert.True(Math.Abs(result[r, c] - expected) < 1e-5f, $"Mismatch at [{r},{c}]: got {result[r, c]}, expected {expected}");
+                }
+            }
+        }
+
+        [Fact]
+        public void SwiGLU_SingleTensorSplit_Correctness()
+        {
+            // Combined [gate, up] along last dimension: [1, 4]
+            var combined = Tensor.FromArray(new float[] { 0f, 2f, 3f, 6f }, 1, 4);
+            var result = Tensor.SwiGLU(combined, dim: -1);
+
+            Assert.Equal(new[] { 1, 2 }, result.Shape.Dimensions);
+
+            var expected = Tensor.SwiGLU(combined.Slice(1, 0, 2), combined.Slice(1, 2, 2));
+            Assert.Equal(expected[0, 0], result[0, 0]);
+            Assert.Equal(expected[0, 1], result[0, 1]);
+        }
+
+        [Fact]
+        public void GeGLU_TwoTensors_Correctness()
+        {
+            var gate = Tensor.FromArray(new float[] { 0f, 1f, -1f, 2f }, 2, 2);
+            var up = Tensor.FromArray(new float[] { 3f, 4f, 5f, 6f }, 2, 2);
+
+            var result = Tensor.GeGLU(gate, up);
+
+            // Manual calculation: gelu(g) * u
+            var geluGate = TensorOps.GELU(gate);
+            var expected = geluGate * up;
+
+            for (int r = 0; r < 2; r++)
+            {
+                for (int c = 0; c < 2; c++)
+                {
+                    Assert.True(Math.Abs(result[r, c] - expected[r, c]) < 1e-4f, $"Mismatch at [{r},{c}]: got {result[r, c]}, expected {expected[r, c]}");
+                }
+            }
+        }
+
+        [Fact]
+        public void GemvQ4_0_Correctness()
+        {
+            // 1 row, 32 cols (1 block of Q4_0 = 18 bytes)
+            byte[] packed = new byte[18];
+            // scale = 1.0 (FP16 0x3C00)
+            packed[0] = 0x00;
+            packed[1] = 0x3C;
+
+            // Fill 16 bytes with 0x9A -> low nibble 0xA = 10 -> (10 - 8) = 2
+            //                         -> high nibble 0x9 = 9 -> (9 - 8) = 1
+            for (int i = 0; i < 16; i++) packed[2 + i] = 0x9A;
+
+            // Activation: all ones
+            var act = Tensor.Ones(32);
+
+            var y = TensorBlas.GemvQ4_0(act, packed, 1, 32);
+
+            Assert.Equal(1, y.Length);
+            // 16 elements with weight 2 * 1.0 = 32
+            // 16 elements with weight 1 * 1.0 = 16
+            // Total = 48
+            Assert.True(Math.Abs(y[0] - 48f) < 1e-4f, $"Expected 48, got {y[0]}");
+        }
+
+        [Fact]
+        public void GemvQ8_0_Correctness()
+        {
+            // 1 row, 32 cols (1 block of Q8_0 = 34 bytes)
+            byte[] packed = new byte[34];
+            // scale = 2.0 (FP16 0x4000)
+            packed[0] = 0x00;
+            packed[1] = 0x40;
+
+            // Fill 32 bytes with signed value 3
+            for (int i = 0; i < 32; i++) packed[2 + i] = 3;
+
+            // Activation: all ones
+            var act = Tensor.Ones(32);
+
+            var y = TensorBlas.GemvQ8_0(act, packed, 1, 32);
+
+            Assert.Equal(1, y.Length);
+            // 32 elements with weight 3 * scale 2.0 = 6 * 32 = 192
+            Assert.True(Math.Abs(y[0] - 192f) < 1e-4f, $"Expected 192, got {y[0]}");
+        }
+
+        [Fact]
+        public void ZeroCopyGEMM_OnNativeMemoryBlock()
+        {
+            // Test that Pointer-based GEMM works on off-heap unmanaged memory without throwing or falling into ToArray trap
+            using var blockA = ZeroPrimitives.Memory.NativeMemoryBlock.Allocate(4 * sizeof(float));
+            using var blockB = ZeroPrimitives.Memory.NativeMemoryBlock.Allocate(4 * sizeof(float));
+
+            var a = Tensor.FromNativeBlock<float>(blockA, 2, 2);
+            var b = Tensor.FromNativeBlock<float>(blockB, 2, 2);
+
+            a[0, 0] = 1f; a[0, 1] = 2f;
+            a[1, 0] = 3f; a[1, 1] = 4f;
+
+            b[0, 0] = 5f; b[0, 1] = 6f;
+            b[1, 0] = 7f; b[1, 1] = 8f;
+
+            // Verify that TryGetArray returns null on NativeMemoryStorage
+            Assert.Null(a.Storage.TryGetArray(out _));
+
+            // Run GEMM: C = A @ B
+            var c = TensorBlas.MatMul(a, b);
+
+            Assert.Equal(19f, c[0, 0]); // 1*5 + 2*7 = 19
+            Assert.Equal(22f, c[0, 1]); // 1*6 + 2*8 = 22
+            Assert.Equal(43f, c[1, 0]); // 3*5 + 4*7 = 43
+            Assert.Equal(50f, c[1, 1]); // 3*6 + 4*8 = 50
+        }
     }
 }

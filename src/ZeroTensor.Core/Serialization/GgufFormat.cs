@@ -145,6 +145,96 @@ namespace ZeroTensor.Core
             return result;
         }
 
+        /// <summary>
+        /// Computes high-performance streaming matrix multiplication on quantized weights directly from the archive:
+        /// y = x @ W^T, where W is stored in the GGUF container as Q4_0, Q8_0, or F32.
+        /// Achieves true zero-copy execution without allocating gigabytes of dequantized weights in RAM.
+        /// </summary>
+        public Tensor<float> MatMulQuantized(Tensor<float> x, string weightName)
+        {
+            if (x == null) throw new ArgumentNullException(nameof(x));
+            var info = _tensorInfos.Find(t => t.Name.Equals(weightName, StringComparison.OrdinalIgnoreCase));
+            if (info == null) throw new KeyNotFoundException($"Tensor '{weightName}' not found in GGUF archive.");
+
+            if (info.Dimensions.Length != 2)
+                throw new InvalidOperationException($"Quantized MatMul currently requires a 2D weight matrix, but '{weightName}' has rank {info.Dimensions.Length}.");
+
+            int n = info.Dimensions[0]; // rows (out_features)
+            int k = info.Dimensions[1]; // cols (in_features)
+
+            // If F32, fallback to standard TensorBlas.MatMul
+            if (info.Type == GgmlType.F32)
+            {
+                var w = GetFloatTensor(weightName);
+                var wT = w.Transpose(0, 1);
+                return TensorBlas.MatMul(x, wT);
+            }
+
+            var xContig = x.IsContiguous ? x : x.ToContiguous();
+            int xLen = xContig.Length;
+
+            if (xLen % k != 0)
+                throw new InvalidOperationException($"Activation inner dimension mismatch: activation total elements ({xLen}) is not divisible by weight in_features ({k}).");
+
+            int batchSize = xLen / k;
+
+            int[] outDims;
+            if (x.Rank == 1)
+            {
+                outDims = new[] { n };
+            }
+            else
+            {
+                outDims = new int[x.Rank];
+                for (int i = 0; i < x.Rank - 1; i++) outDims[i] = x.Shape[i];
+                outDims[x.Rank - 1] = n;
+            }
+
+            var result = new Tensor<float>(outDims);
+
+            using (var accessor = _mmf.CreateViewAccessor(info.AbsoluteOffset, info.ByteSize, MemoryMappedFileAccess.Read))
+            {
+                unsafe
+                {
+                    byte* pRaw = null;
+                    accessor.SafeMemoryMappedViewHandle.AcquirePointer(ref pRaw);
+                    try
+                    {
+                        byte* pBytes = pRaw + accessor.PointerOffset;
+                        fixed (float* pAct = &xContig.Storage.GetPinnableReference(xContig.Offset))
+                        fixed (float* pDst = &result.Storage.GetPinnableReference(result.Offset))
+                        {
+                            IntPtr ptrWeight = (IntPtr)pBytes;
+
+                            for (int b = 0; b < batchSize; b++)
+                            {
+                                float* curAct = pAct + b * k;
+                                float* curDst = pDst + b * n;
+
+                                switch (info.Type)
+                                {
+                                    case GgmlType.Q4_0:
+                                        GgufDequantizer.GemvQ4_0(ptrWeight, curAct, curDst, n, k);
+                                        break;
+                                    case GgmlType.Q8_0:
+                                        GgufDequantizer.GemvQ8_0(ptrWeight, curAct, curDst, n, k);
+                                        break;
+                                    default:
+                                        throw new NotSupportedException($"Streaming quantized MatMul for GGML type {info.Type} is not implemented yet.");
+                                }
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        accessor.SafeMemoryMappedViewHandle.ReleasePointer();
+                    }
+                }
+            }
+
+            return result;
+        }
+
         public void Dispose()
         {
             foreach (var kvp in _fp32Tensors)
@@ -221,6 +311,94 @@ namespace ZeroTensor.Core
                 {
                     pDst[dstOffset + j] = qs[j] * d;
                 }
+            });
+        }
+
+        /// <summary>
+        /// Computes On-the-fly streaming Matrix-Vector multiplication with Q4_0 quantized weights:
+        /// y (1 x N) = x (1 x K) @ W_q4 (N x K)^T.
+        /// Evaluates directly on raw memory-mapped pointers with zero weight dequantization and zero heap allocation.
+        /// </summary>
+        public static void GemvQ4_0(IntPtr ptrWeight, float* pAct, float* pDst, int nRows, int kCols)
+        {
+            if (kCols % Qk4_0 != 0)
+                throw new ArgumentException($"Inner dimension K ({kCols}) must be a multiple of block size ({Qk4_0}).");
+
+            int numBlocksPerRow = kCols / Qk4_0;
+            const int bytesPerBlock = 18;
+            int rowByteStride = numBlocksPerRow * bytesPerBlock;
+
+            Parallel.For(0, nRows, r =>
+            {
+                byte* pRow = (byte*)ptrWeight + r * rowByteStride;
+                float sum = 0f;
+                int actOffset = 0;
+
+                for (int b = 0; b < numBlocksPerRow; b++)
+                {
+                    byte* blockPtr = pRow + b * bytesPerBlock;
+                    ushort rawScale = Unsafe.ReadUnaligned<ushort>(blockPtr);
+                    Half hScale = Unsafe.As<ushort, Half>(ref rawScale);
+                    float d = (float)hScale;
+                    byte* qs = blockPtr + 2;
+
+                    float blockSum = 0f;
+                    for (int j = 0; j < 16; j++)
+                    {
+                        byte val = qs[j];
+                        int x0 = (val & 0x0F) - 8;
+                        int x1 = (val >> 4) - 8;
+
+                        blockSum += pAct[actOffset + j] * x0 + pAct[actOffset + j + 16] * x1;
+                    }
+
+                    sum += blockSum * d;
+                    actOffset += Qk4_0;
+                }
+
+                pDst[r] = sum;
+            });
+        }
+
+        /// <summary>
+        /// Computes On-the-fly streaming Matrix-Vector multiplication with Q8_0 quantized weights:
+        /// y (1 x N) = x (1 x K) @ W_q8 (N x K)^T.
+        /// Evaluates directly on raw memory-mapped pointers with zero weight dequantization and zero heap allocation.
+        /// </summary>
+        public static void GemvQ8_0(IntPtr ptrWeight, float* pAct, float* pDst, int nRows, int kCols)
+        {
+            if (kCols % Qk8_0 != 0)
+                throw new ArgumentException($"Inner dimension K ({kCols}) must be a multiple of block size ({Qk8_0}).");
+
+            int numBlocksPerRow = kCols / Qk8_0;
+            const int bytesPerBlock = 34;
+            int rowByteStride = numBlocksPerRow * bytesPerBlock;
+
+            Parallel.For(0, nRows, r =>
+            {
+                byte* pRow = (byte*)ptrWeight + r * rowByteStride;
+                float sum = 0f;
+                int actOffset = 0;
+
+                for (int b = 0; b < numBlocksPerRow; b++)
+                {
+                    byte* blockPtr = pRow + b * bytesPerBlock;
+                    ushort rawScale = Unsafe.ReadUnaligned<ushort>(blockPtr);
+                    Half hScale = Unsafe.As<ushort, Half>(ref rawScale);
+                    float d = (float)hScale;
+                    sbyte* qs = (sbyte*)(blockPtr + 2);
+
+                    float blockSum = 0f;
+                    for (int j = 0; j < 32; j++)
+                    {
+                        blockSum += pAct[actOffset + j] * qs[j];
+                    }
+
+                    sum += blockSum * d;
+                    actOffset += Qk8_0;
+                }
+
+                pDst[r] = sum;
             });
         }
 

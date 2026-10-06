@@ -36,6 +36,8 @@ namespace ZeroTensor.Benchmarks
             RunZeroCopySliceBenchmark();
             RunMemoryAllocationBenchmark();
             RunGgufDequantizeBenchmark();
+            RunSwiGLUBenchmark();
+            RunStreamingGemvQuantizedBenchmark();
 
             Console.WriteLine("\nAll benchmarks completed successfully.");
         }
@@ -393,6 +395,88 @@ namespace ZeroTensor.Benchmarks
                 Console.WriteLine($"Q4_0 Dequantize: {q4Ms:F3} ms | Throughput: {q4ThroughputMElems:F1} M weights/sec ({q4Gbps:F2} GB/s)");
                 Console.WriteLine($"Q8_0 Dequantize: {q8Ms:F3} ms | Throughput: {q8ThroughputMElems:F1} M weights/sec ({q8Gbps:F2} GB/s)\n");
             }
+        }
+
+        private static void RunSwiGLUBenchmark()
+        {
+            Console.WriteLine("--- 11. Fused SwiGLU Activation Benchmark (IntermediateDim = 11008, Tokens = 128) ---");
+            int seqLen = 128;
+            int hiddenDim = 11008; // LLaMA 7B intermediate dimension
+
+            var gate = Tensor.Normal(seed: 42, shape: new[] { seqLen, hiddenDim });
+            var up = Tensor.Normal(seed: 43, shape: new[] { seqLen, hiddenDim });
+
+            int iters = 50;
+
+            // 1. Naive SwiGLU: SiLU(gate) * up (2 passes + intermediate tensor allocation)
+            for (int i = 0; i < 3; i++) { var _ = TensorOps.SiLU(gate) * up; }
+            var sw = Stopwatch.StartNew();
+            for (int i = 0; i < iters; i++)
+            {
+                var siluG = TensorOps.SiLU(gate);
+                var res = siluG * up;
+            }
+            sw.Stop();
+            double naiveMs = sw.Elapsed.TotalMilliseconds / iters;
+
+            // 2. Fused Streaming SwiGLU (single pass, zero intermediate allocations)
+            for (int i = 0; i < 3; i++) { var _ = Tensor.SwiGLU(gate, up); }
+            sw.Restart();
+            for (int i = 0; i < iters; i++)
+            {
+                var res = Tensor.SwiGLU(gate, up);
+            }
+            sw.Stop();
+            double fusedMs = sw.Elapsed.TotalMilliseconds / iters;
+
+            Console.WriteLine($"Naive (SiLU + Mul): {naiveMs:F3} ms (Allocates intermediate SiLU buffer)");
+            Console.WriteLine($"Fused SwiGLU      : {fusedMs:F3} ms (Single pass streaming, 0 intermediate allocations)");
+            Console.WriteLine($"Speedup           : {naiveMs / fusedMs:F2}x faster\n");
+        }
+
+        private static unsafe void RunStreamingGemvQuantizedBenchmark()
+        {
+            Console.WriteLine("--- 12. Streaming On-The-Fly Quantized GEMV (4096 x 4096 Linear Layer, 1 Token Decode) ---");
+            int k = 4096;
+            int n = 4096;
+
+            var act = Tensor.Normal(seed: 42, shape: new[] { k });
+
+            int blocksPerRowQ4 = k / 32;
+            byte[] q4Weights = new byte[n * blocksPerRowQ4 * 18];
+            for (int i = 0; i < q4Weights.Length; i++) q4Weights[i] = (byte)(i % 255);
+
+            int blocksPerRowQ8 = k / 32;
+            byte[] q8Weights = new byte[n * blocksPerRowQ8 * 34];
+            for (int i = 0; i < q8Weights.Length; i++) q8Weights[i] = (byte)(i % 255);
+
+            int iters = 20;
+
+            // Warmup
+            var _1 = TensorBlas.GemvQ4_0(act, q4Weights, n, k);
+            var _2 = TensorBlas.GemvQ8_0(act, q8Weights, n, k);
+
+            // Benchmark Q4_0
+            var sw = Stopwatch.StartNew();
+            for (int i = 0; i < iters; i++)
+            {
+                var _ = TensorBlas.GemvQ4_0(act, q4Weights, n, k);
+            }
+            sw.Stop();
+            double q4Ms = sw.Elapsed.TotalMilliseconds / iters;
+
+            // Benchmark Q8_0
+            sw.Restart();
+            for (int i = 0; i < iters; i++)
+            {
+                var _ = TensorBlas.GemvQ8_0(act, q8Weights, n, k);
+            }
+            sw.Stop();
+            double q8Ms = sw.Elapsed.TotalMilliseconds / iters;
+
+            double gflops = (2.0 * n * k) / 1e9;
+            Console.WriteLine($"Q4_0 GEMV (4096 x 4096): {q4Ms:F2} ms | Compute: {gflops / (q4Ms / 1000.0):F2} GFLOPS (Weights: {q4Weights.Length / (1024 * 1024.0):F1} MB)");
+            Console.WriteLine($"Q8_0 GEMV (4096 x 4096): {q8Ms:F2} ms | Compute: {gflops / (q8Ms / 1000.0):F2} GFLOPS (Weights: {q8Weights.Length / (1024 * 1024.0):F1} MB)\n");
         }
     }
 }

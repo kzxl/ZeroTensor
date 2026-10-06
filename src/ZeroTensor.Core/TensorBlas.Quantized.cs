@@ -281,5 +281,49 @@ namespace ZeroTensor.Core
 
             return c;
         }
+
+        /// <summary>
+        /// On-the-fly streaming Matrix-Vector multiplication for Q4_0 quantized weights:
+        /// y = x @ W^T, where W is raw Q4_0 packed byte array.
+        /// </summary>
+        public static unsafe Tensor<float> GemvQ4_0(Tensor<float> activation, byte[] packedWeights, int nRows, int kCols)
+        {
+            if (activation == null) throw new ArgumentNullException(nameof(activation));
+            if (packedWeights == null) throw new ArgumentNullException(nameof(packedWeights));
+
+            var actContig = activation.IsContiguous ? activation : activation.ToContiguous();
+            var result = new Tensor<float>(nRows);
+
+            fixed (byte* pW = packedWeights)
+            fixed (float* pAct = &actContig.Storage.GetPinnableReference(actContig.Offset))
+            fixed (float* pDst = &result.Storage.GetPinnableReference(result.Offset))
+            {
+                GgufDequantizer.GemvQ4_0((IntPtr)pW, pAct, pDst, nRows, kCols);
+            }
+
+            return result;
+        }
+
+        /// <summary>
+        /// On-the-fly streaming Matrix-Vector multiplication for Q8_0 quantized weights:
+        /// y = x @ W^T, where W is raw Q8_0 packed byte array.
+        /// </summary>
+        public static unsafe Tensor<float> GemvQ8_0(Tensor<float> activation, byte[] packedWeights, int nRows, int kCols)
+        {
+            if (activation == null) throw new ArgumentNullException(nameof(activation));
+            if (packedWeights == null) throw new ArgumentNullException(nameof(packedWeights));
+
+            var actContig = activation.IsContiguous ? activation : activation.ToContiguous();
+            var result = new Tensor<float>(nRows);
+
+            fixed (byte* pW = packedWeights)
+            fixed (float* pAct = &actContig.Storage.GetPinnableReference(actContig.Offset))
+            fixed (float* pDst = &result.Storage.GetPinnableReference(result.Offset))
+            {
+                GgufDequantizer.GemvQ8_0((IntPtr)pW, pAct, pDst, nRows, kCols);
+            }
+
+            return result;
+        }
     }
 }

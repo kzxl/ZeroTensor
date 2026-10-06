@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 
 namespace ZeroTensor.Core
@@ -107,10 +108,6 @@ namespace ZeroTensor.Core
             var aContig = a.ToContiguous();
             var bContig = b.ToContiguous();
 
-            var bufA = aContig.Buffer;
-            var bufB = bContig.Buffer;
-            var bufC = c.Buffer;
-
             int offA = aContig.Offset;
             int offB = bContig.Offset;
             int offC = c.Offset;
@@ -124,102 +121,118 @@ namespace ZeroTensor.Core
             // Multithread outer M-blocks for larger matrices
             bool runParallel = (m * n >= 4096) && (m >= BlockM * 2);
 
-            Action<int> processMBlock = (m0) =>
+            unsafe
             {
-                int mEnd = Math.Min(m0 + BlockM, m);
-
-                for (int k0 = 0; k0 < k; k0 += BlockK)
+                fixed (float* pA = &aContig.Storage.GetPinnableReference(offA))
+                fixed (float* pB = &bContig.Storage.GetPinnableReference(offB))
+                fixed (float* pC = &c.Storage.GetPinnableReference(offC))
                 {
-                    int kEnd = Math.Min(k0 + BlockK, k);
+                    IntPtr ptrA = (IntPtr)pA;
+                    IntPtr ptrB = (IntPtr)pB;
+                    IntPtr ptrC = (IntPtr)pC;
 
-                    for (int n0 = 0; n0 < n; n0 += BlockN)
+                    Action<int> processMBlock = (m0) =>
                     {
-                        int nEnd = Math.Min(n0 + BlockN, n);
+                        float* localA = (float*)ptrA;
+                        float* localB = (float*)ptrB;
+                        float* localC = (float*)ptrC;
 
-                        // 2-row register-tiled inner micro-kernel
-                        int i = m0;
-                        for (; i <= mEnd - 2; i += 2)
+                        int mEnd = Math.Min(m0 + BlockM, m);
+
+                        for (int k0 = 0; k0 < k; k0 += BlockK)
                         {
-                            int rowOffA0 = offA + i * sA0;
-                            int rowOffA1 = offA + (i + 1) * sA0;
-                            int rowOffC0 = offC + i * sC0;
-                            int rowOffC1 = offC + (i + 1) * sC0;
+                            int kEnd = Math.Min(k0 + BlockK, k);
 
-                            for (int p = k0; p < kEnd; p++)
+                            for (int n0 = 0; n0 < n; n0 += BlockN)
                             {
-                                float a0 = bufA[rowOffA0 + p * sA1] * alpha;
-                                float a1 = bufA[rowOffA1 + p * sA1] * alpha;
-                                if (a0 == 0f && a1 == 0f) continue;
+                                int nEnd = Math.Min(n0 + BlockN, n);
 
-                                var vA0 = new Vector<float>(a0);
-                                var vA1 = new Vector<float>(a1);
-                                int rowOffB = offB + p * sB0;
-
-                                int j = n0;
-                                for (; j <= nEnd - vecSize; j += vecSize)
+                                // 2-row register-tiled inner micro-kernel
+                                int i = m0;
+                                for (; i <= mEnd - 2; i += 2)
                                 {
-                                    var vB = new Vector<float>(bufB, rowOffB + j * sB1);
-                                    var vC0 = new Vector<float>(bufC, rowOffC0 + j * sC1);
-                                    var vC1 = new Vector<float>(bufC, rowOffC1 + j * sC1);
+                                    int rowOffA0 = i * sA0;
+                                    int rowOffA1 = (i + 1) * sA0;
+                                    int rowOffC0 = i * sC0;
+                                    int rowOffC1 = (i + 1) * sC0;
 
-                                    (vC0 + vA0 * vB).CopyTo(bufC, rowOffC0 + j * sC1);
-                                    (vC1 + vA1 * vB).CopyTo(bufC, rowOffC1 + j * sC1);
+                                    for (int p = k0; p < kEnd; p++)
+                                    {
+                                        float a0 = localA[rowOffA0 + p * sA1] * alpha;
+                                        float a1 = localA[rowOffA1 + p * sA1] * alpha;
+                                        if (a0 == 0f && a1 == 0f) continue;
+
+                                        var vA0 = new Vector<float>(a0);
+                                        var vA1 = new Vector<float>(a1);
+                                        int rowOffB = p * sB0;
+
+                                        int j = n0;
+                                        for (; j <= nEnd - vecSize; j += vecSize)
+                                        {
+                                            var vB = Unsafe.ReadUnaligned<Vector<float>>(localB + rowOffB + j * sB1);
+                                            var vC0 = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC0 + j * sC1);
+                                            var vC1 = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC1 + j * sC1);
+
+                                            Unsafe.WriteUnaligned(localC + rowOffC0 + j * sC1, vC0 + vA0 * vB);
+                                            Unsafe.WriteUnaligned(localC + rowOffC1 + j * sC1, vC1 + vA1 * vB);
+                                        }
+
+                                        for (; j < nEnd; j++)
+                                        {
+                                            float bVal = localB[rowOffB + j * sB1];
+                                            localC[rowOffC0 + j * sC1] += a0 * bVal;
+                                            localC[rowOffC1 + j * sC1] += a1 * bVal;
+                                        }
+                                    }
                                 }
 
-                                for (; j < nEnd; j++)
+                                // Tail cleanup for remaining odd row
+                                for (; i < mEnd; i++)
                                 {
-                                    float bVal = bufB[rowOffB + j * sB1];
-                                    bufC[rowOffC0 + j * sC1] += a0 * bVal;
-                                    bufC[rowOffC1 + j * sC1] += a1 * bVal;
+                                    int rowOffA = i * sA0;
+                                    int rowOffC = i * sC0;
+
+                                    for (int p = k0; p < kEnd; p++)
+                                    {
+                                        float aVal = localA[rowOffA + p * sA1] * alpha;
+                                        if (aVal == 0f) continue;
+
+                                        var vA = new Vector<float>(aVal);
+                                        int rowOffB = p * sB0;
+
+                                        int j = n0;
+                                        for (; j <= nEnd - vecSize; j += vecSize)
+                                        {
+                                            var vB = Unsafe.ReadUnaligned<Vector<float>>(localB + rowOffB + j * sB1);
+                                            var vC = Unsafe.ReadUnaligned<Vector<float>>(localC + rowOffC + j * sC1);
+                                            Unsafe.WriteUnaligned(localC + rowOffC + j * sC1, vC + vA * vB);
+                                        }
+
+                                        for (; j < nEnd; j++)
+                                        {
+                                            localC[rowOffC + j * sC1] += aVal * localB[rowOffB + j * sB1];
+                                        }
+                                    }
                                 }
                             }
                         }
+                    };
 
-                        // Tail cleanup for remaining odd row
-                        for (; i < mEnd; i++)
+                    if (runParallel)
+                    {
+                        int numMBlocks = (m + BlockM - 1) / BlockM;
+                        Parallel.For(0, numMBlocks, blockIdx =>
                         {
-                            int rowOffA = offA + i * sA0;
-                            int rowOffC = offC + i * sC0;
-
-                            for (int p = k0; p < kEnd; p++)
-                            {
-                                float aVal = bufA[rowOffA + p * sA1] * alpha;
-                                if (aVal == 0f) continue;
-
-                                var vA = new Vector<float>(aVal);
-                                int rowOffB = offB + p * sB0;
-
-                                int j = n0;
-                                for (; j <= nEnd - vecSize; j += vecSize)
-                                {
-                                    var vB = new Vector<float>(bufB, rowOffB + j * sB1);
-                                    var vC = new Vector<float>(bufC, rowOffC + j * sC1);
-                                    (vC + vA * vB).CopyTo(bufC, rowOffC + j * sC1);
-                                }
-
-                                for (; j < nEnd; j++)
-                                {
-                                    bufC[rowOffC + j * sC1] += aVal * bufB[rowOffB + j * sB1];
-                                }
-                            }
+                            processMBlock(blockIdx * BlockM);
+                        });
+                    }
+                    else
+                    {
+                        for (int m0 = 0; m0 < m; m0 += BlockM)
+                        {
+                            processMBlock(m0);
                         }
                     }
-                }
-            };
-
-            if (runParallel)
-            {
-                int numMBlocks = (m + BlockM - 1) / BlockM;
-                Parallel.For(0, numMBlocks, blockIdx =>
-                {
-                    processMBlock(blockIdx * BlockM);
-                });
-            }
-            else
-            {
-                for (int m0 = 0; m0 < m; m0 += BlockM)
-                {
-                    processMBlock(m0);
                 }
             }
         }
