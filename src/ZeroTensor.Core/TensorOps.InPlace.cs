@@ -1,5 +1,6 @@
 using System;
 using System.Numerics;
+using System.Runtime.CompilerServices;
 
 namespace ZeroTensor.Core
 {
@@ -10,30 +11,29 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Adds tensor b into tensor a in-place: a += b.
         /// </summary>
-        public static Tensor<float> Add_(this Tensor<float> a, Tensor<float> b)
+        public static unsafe Tensor<float> Add_(this Tensor<float> a, Tensor<float> b)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
 
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
                 int len = a.Length;
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (float* pB = &b.Storage.GetPinnableReference(b.Offset))
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va + vb).CopyTo(bufA, offA + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufA[offA + i] += bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                        Unsafe.WriteUnaligned(pA + i, va + vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pA[i] += pB[i];
+                    }
                 }
                 return a;
             }
@@ -47,30 +47,29 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Subtracts tensor b from tensor a in-place: a -= b.
         /// </summary>
-        public static Tensor<float> Subtract_(this Tensor<float> a, Tensor<float> b)
+        public static unsafe Tensor<float> Subtract_(this Tensor<float> a, Tensor<float> b)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
 
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
                 int len = a.Length;
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (float* pB = &b.Storage.GetPinnableReference(b.Offset))
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va - vb).CopyTo(bufA, offA + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufA[offA + i] -= bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                        Unsafe.WriteUnaligned(pA + i, va - vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pA[i] -= pB[i];
+                    }
                 }
                 return a;
             }
@@ -83,30 +82,29 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Multiplies tensor a by tensor b element-wise in-place: a *= b.
         /// </summary>
-        public static Tensor<float> Multiply_(this Tensor<float> a, Tensor<float> b)
+        public static unsafe Tensor<float> Multiply_(this Tensor<float> a, Tensor<float> b)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
 
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
                 int len = a.Length;
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (float* pB = &b.Storage.GetPinnableReference(b.Offset))
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va * vb).CopyTo(bufA, offA + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufA[offA + i] *= bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                        Unsafe.WriteUnaligned(pA + i, va * vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pA[i] *= pB[i];
+                    }
                 }
                 return a;
             }
@@ -119,30 +117,29 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Divides tensor a by tensor b element-wise in-place: a /= b.
         /// </summary>
-        public static Tensor<float> Divide_(this Tensor<float> a, Tensor<float> b)
+        public static unsafe Tensor<float> Divide_(this Tensor<float> a, Tensor<float> b)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
 
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
                 int len = a.Length;
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (float* pB = &b.Storage.GetPinnableReference(b.Offset))
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va / vb).CopyTo(bufA, offA + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufA[offA + i] /= bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                        Unsafe.WriteUnaligned(pA + i, va / vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pA[i] /= pB[i];
+                    }
                 }
                 return a;
             }
@@ -155,23 +152,24 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Adds a scalar to tensor a in-place: a += scalar.
         /// </summary>
-        public static Tensor<float> AddScalar_(this Tensor<float> a, float scalar)
+        public static unsafe Tensor<float> AddScalar_(this Tensor<float> a, float scalar)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                int offA = a.Offset;
                 int len = a.Length;
                 var vScalar = new Vector<float>(scalar);
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
                 {
-                    var v = new Vector<float>(bufA, offA + i);
-                    (v + vScalar).CopyTo(bufA, offA + i);
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var v = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                        Unsafe.WriteUnaligned(pA + i, v + vScalar);
+                    }
+                    for (; i < len; i++) pA[i] += scalar;
                 }
-                for (; i < len; i++) bufA[offA + i] += scalar;
                 return a;
             }
 
@@ -182,23 +180,24 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Multiplies tensor a by a scalar in-place: a *= scalar.
         /// </summary>
-        public static Tensor<float> MultiplyScalar_(this Tensor<float> a, float scalar)
+        public static unsafe Tensor<float> MultiplyScalar_(this Tensor<float> a, float scalar)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                int offA = a.Offset;
                 int len = a.Length;
                 var vScalar = new Vector<float>(scalar);
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
                 {
-                    var v = new Vector<float>(bufA, offA + i);
-                    (v * vScalar).CopyTo(bufA, offA + i);
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var v = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                        Unsafe.WriteUnaligned(pA + i, v * vScalar);
+                    }
+                    for (; i < len; i++) pA[i] *= scalar;
                 }
-                for (; i < len; i++) bufA[offA + i] *= scalar;
                 return a;
             }
 
@@ -209,23 +208,24 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Applies ReLU activation in-place: a = max(0, a).
         /// </summary>
-        public static Tensor<float> Relu_(this Tensor<float> a)
+        public static unsafe Tensor<float> Relu_(this Tensor<float> a)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                int offA = a.Offset;
                 int len = a.Length;
                 var zeroVec = Vector<float>.Zero;
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
                 {
-                    var v = new Vector<float>(bufA, offA + i);
-                    Vector.Max(v, zeroVec).CopyTo(bufA, offA + i);
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var v = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                        Unsafe.WriteUnaligned(pA + i, Vector.Max(v, zeroVec));
+                    }
+                    for (; i < len; i++) pA[i] = Math.Max(0f, pA[i]);
                 }
-                for (; i < len; i++) bufA[offA + i] = Math.Max(0f, bufA[offA + i]);
                 return a;
             }
 
@@ -236,18 +236,19 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Clamps all elements in-place: a = clamp(a, min, max).
         /// </summary>
-        public static Tensor<float> Clamp_(this Tensor<float> a, float min, float max)
+        public static unsafe Tensor<float> Clamp_(this Tensor<float> a, float min, float max)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                int offA = a.Offset;
                 int len = a.Length;
-                for (int i = 0; i < len; i++)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
                 {
-                    float val = bufA[offA + i];
-                    bufA[offA + i] = val < min ? min : (val > max ? max : val);
+                    for (int i = 0; i < len; i++)
+                    {
+                        float val = pA[i];
+                        pA[i] = val < min ? min : (val > max ? max : val);
+                    }
                 }
                 return a;
             }
@@ -267,27 +268,28 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Computes destination = a + b without allocating a new tensor buffer.
         /// </summary>
-        public static void Add(Tensor<float> a, Tensor<float> b, Tensor<float> destination)
+        public static unsafe void Add(Tensor<float> a, Tensor<float> b, Tensor<float> destination)
         {
             if (destination == null) throw new ArgumentNullException(nameof(destination));
             if (a.Shape == b.Shape && a.Shape == destination.Shape && a.IsContiguous && b.IsContiguous && destination.IsContiguous)
             {
-                var bufA = a.Buffer; int offA = a.Offset;
-                var bufB = b.Buffer; int offB = b.Offset;
-                var bufDst = destination.Buffer; int offDst = destination.Offset;
                 int len = a.Length;
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (float* pB = &b.Storage.GetPinnableReference(b.Offset))
+                fixed (float* pDst = &destination.Storage.GetPinnableReference(destination.Offset))
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va + vb).CopyTo(bufDst, offDst + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufDst[offDst + i] = bufA[offA + i] + bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                        Unsafe.WriteUnaligned(pDst + i, va + vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pDst[i] = pA[i] + pB[i];
+                    }
                 }
                 return;
             }
@@ -299,27 +301,28 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Computes destination = a - b without allocating a new tensor buffer.
         /// </summary>
-        public static void Subtract(Tensor<float> a, Tensor<float> b, Tensor<float> destination)
+        public static unsafe void Subtract(Tensor<float> a, Tensor<float> b, Tensor<float> destination)
         {
             if (destination == null) throw new ArgumentNullException(nameof(destination));
             if (a.Shape == b.Shape && a.Shape == destination.Shape && a.IsContiguous && b.IsContiguous && destination.IsContiguous)
             {
-                var bufA = a.Buffer; int offA = a.Offset;
-                var bufB = b.Buffer; int offB = b.Offset;
-                var bufDst = destination.Buffer; int offDst = destination.Offset;
                 int len = a.Length;
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (float* pB = &b.Storage.GetPinnableReference(b.Offset))
+                fixed (float* pDst = &destination.Storage.GetPinnableReference(destination.Offset))
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va - vb).CopyTo(bufDst, offDst + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufDst[offDst + i] = bufA[offA + i] - bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                        Unsafe.WriteUnaligned(pDst + i, va - vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pDst[i] = pA[i] - pB[i];
+                    }
                 }
                 return;
             }
@@ -331,27 +334,28 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Computes destination = a * b without allocating a new tensor buffer.
         /// </summary>
-        public static void Multiply(Tensor<float> a, Tensor<float> b, Tensor<float> destination)
+        public static unsafe void Multiply(Tensor<float> a, Tensor<float> b, Tensor<float> destination)
         {
             if (destination == null) throw new ArgumentNullException(nameof(destination));
             if (a.Shape == b.Shape && a.Shape == destination.Shape && a.IsContiguous && b.IsContiguous && destination.IsContiguous)
             {
-                var bufA = a.Buffer; int offA = a.Offset;
-                var bufB = b.Buffer; int offB = b.Offset;
-                var bufDst = destination.Buffer; int offDst = destination.Offset;
                 int len = a.Length;
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (float* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (float* pB = &b.Storage.GetPinnableReference(b.Offset))
+                fixed (float* pDst = &destination.Storage.GetPinnableReference(destination.Offset))
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va * vb).CopyTo(bufDst, offDst + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufDst[offDst + i] = bufA[offA + i] * bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                        Unsafe.WriteUnaligned(pDst + i, va * vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pDst[i] = pA[i] * pB[i];
+                    }
                 }
                 return;
             }
@@ -367,30 +371,29 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Adds tensor b into tensor a in-place: a += b (double precision).
         /// </summary>
-        public static Tensor<double> Add_(this Tensor<double> a, Tensor<double> b)
+        public static unsafe Tensor<double> Add_(this Tensor<double> a, Tensor<double> b)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
 
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
                 int len = a.Length;
                 int vecSize = Vector<double>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (double* pB = &b.Storage.GetPinnableReference(b.Offset))
                 {
-                    var va = new Vector<double>(bufA, offA + i);
-                    var vb = new Vector<double>(bufB, offB + i);
-                    (va + vb).CopyTo(bufA, offA + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufA[offA + i] += bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<double>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<double>>(pB + i);
+                        Unsafe.WriteUnaligned(pA + i, va + vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pA[i] += pB[i];
+                    }
                 }
                 return a;
             }
@@ -403,30 +406,29 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Subtracts tensor b from tensor a in-place: a -= b (double precision).
         /// </summary>
-        public static Tensor<double> Subtract_(this Tensor<double> a, Tensor<double> b)
+        public static unsafe Tensor<double> Subtract_(this Tensor<double> a, Tensor<double> b)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
 
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
                 int len = a.Length;
                 int vecSize = Vector<double>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (double* pB = &b.Storage.GetPinnableReference(b.Offset))
                 {
-                    var va = new Vector<double>(bufA, offA + i);
-                    var vb = new Vector<double>(bufB, offB + i);
-                    (va - vb).CopyTo(bufA, offA + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufA[offA + i] -= bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<double>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<double>>(pB + i);
+                        Unsafe.WriteUnaligned(pA + i, va - vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pA[i] -= pB[i];
+                    }
                 }
                 return a;
             }
@@ -439,30 +441,29 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Multiplies tensor a by tensor b in-place: a *= b (double precision).
         /// </summary>
-        public static Tensor<double> Multiply_(this Tensor<double> a, Tensor<double> b)
+        public static unsafe Tensor<double> Multiply_(this Tensor<double> a, Tensor<double> b)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
 
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
                 int len = a.Length;
                 int vecSize = Vector<double>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (double* pB = &b.Storage.GetPinnableReference(b.Offset))
                 {
-                    var va = new Vector<double>(bufA, offA + i);
-                    var vb = new Vector<double>(bufB, offB + i);
-                    (va * vb).CopyTo(bufA, offA + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufA[offA + i] *= bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<double>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<double>>(pB + i);
+                        Unsafe.WriteUnaligned(pA + i, va * vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pA[i] *= pB[i];
+                    }
                 }
                 return a;
             }
@@ -475,30 +476,29 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Divides tensor a by tensor b element-wise in-place: a /= b (double precision).
         /// </summary>
-        public static Tensor<double> Divide_(this Tensor<double> a, Tensor<double> b)
+        public static unsafe Tensor<double> Divide_(this Tensor<double> a, Tensor<double> b)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (b == null) throw new ArgumentNullException(nameof(b));
 
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                int offA = a.Offset;
-                int offB = b.Offset;
                 int len = a.Length;
                 int vecSize = Vector<double>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (double* pB = &b.Storage.GetPinnableReference(b.Offset))
                 {
-                    var va = new Vector<double>(bufA, offA + i);
-                    var vb = new Vector<double>(bufB, offB + i);
-                    (va / vb).CopyTo(bufA, offA + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufA[offA + i] /= bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<double>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<double>>(pB + i);
+                        Unsafe.WriteUnaligned(pA + i, va / vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pA[i] /= pB[i];
+                    }
                 }
                 return a;
             }
@@ -511,23 +511,24 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Adds a scalar to tensor a in-place: a += scalar (double precision).
         /// </summary>
-        public static Tensor<double> AddScalar_(this Tensor<double> a, double scalar)
+        public static unsafe Tensor<double> AddScalar_(this Tensor<double> a, double scalar)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                int offA = a.Offset;
                 int len = a.Length;
                 var vScalar = new Vector<double>(scalar);
                 int vecSize = Vector<double>.Count;
-                int i = 0;
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
                 {
-                    var v = new Vector<double>(bufA, offA + i);
-                    (v + vScalar).CopyTo(bufA, offA + i);
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var v = Unsafe.ReadUnaligned<Vector<double>>(pA + i);
+                        Unsafe.WriteUnaligned(pA + i, v + vScalar);
+                    }
+                    for (; i < len; i++) pA[i] += scalar;
                 }
-                for (; i < len; i++) bufA[offA + i] += scalar;
                 return a;
             }
 
@@ -538,23 +539,24 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Multiplies tensor a by a scalar in-place: a *= scalar (double precision).
         /// </summary>
-        public static Tensor<double> MultiplyScalar_(this Tensor<double> a, double scalar)
+        public static unsafe Tensor<double> MultiplyScalar_(this Tensor<double> a, double scalar)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                int offA = a.Offset;
                 int len = a.Length;
                 var vScalar = new Vector<double>(scalar);
                 int vecSize = Vector<double>.Count;
-                int i = 0;
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
                 {
-                    var v = new Vector<double>(bufA, offA + i);
-                    (v * vScalar).CopyTo(bufA, offA + i);
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var v = Unsafe.ReadUnaligned<Vector<double>>(pA + i);
+                        Unsafe.WriteUnaligned(pA + i, v * vScalar);
+                    }
+                    for (; i < len; i++) pA[i] *= scalar;
                 }
-                for (; i < len; i++) bufA[offA + i] *= scalar;
                 return a;
             }
 
@@ -565,23 +567,24 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Applies ReLU activation in-place: a = max(0, a) (double precision).
         /// </summary>
-        public static Tensor<double> Relu_(this Tensor<double> a)
+        public static unsafe Tensor<double> Relu_(this Tensor<double> a)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                int offA = a.Offset;
                 int len = a.Length;
                 var zeroVec = Vector<double>.Zero;
                 int vecSize = Vector<double>.Count;
-                int i = 0;
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
                 {
-                    var v = new Vector<double>(bufA, offA + i);
-                    Vector.Max(v, zeroVec).CopyTo(bufA, offA + i);
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var v = Unsafe.ReadUnaligned<Vector<double>>(pA + i);
+                        Unsafe.WriteUnaligned(pA + i, Vector.Max(v, zeroVec));
+                    }
+                    for (; i < len; i++) pA[i] = Math.Max(0.0, pA[i]);
                 }
-                for (; i < len; i++) bufA[offA + i] = Math.Max(0.0, bufA[offA + i]);
                 return a;
             }
 
@@ -592,18 +595,19 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Clamps all elements in-place: a = clamp(a, min, max) (double precision).
         /// </summary>
-        public static Tensor<double> Clamp_(this Tensor<double> a, double min, double max)
+        public static unsafe Tensor<double> Clamp_(this Tensor<double> a, double min, double max)
         {
             if (a == null) throw new ArgumentNullException(nameof(a));
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                int offA = a.Offset;
                 int len = a.Length;
-                for (int i = 0; i < len; i++)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
                 {
-                    double val = bufA[offA + i];
-                    bufA[offA + i] = val < min ? min : (val > max ? max : val);
+                    for (int i = 0; i < len; i++)
+                    {
+                        double val = pA[i];
+                        pA[i] = val < min ? min : (val > max ? max : val);
+                    }
                 }
                 return a;
             }
@@ -619,27 +623,28 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Computes destination = a + b without allocating a new tensor buffer (double precision).
         /// </summary>
-        public static void Add(Tensor<double> a, Tensor<double> b, Tensor<double> destination)
+        public static unsafe void Add(Tensor<double> a, Tensor<double> b, Tensor<double> destination)
         {
             if (destination == null) throw new ArgumentNullException(nameof(destination));
             if (a.Shape == b.Shape && a.Shape == destination.Shape && a.IsContiguous && b.IsContiguous && destination.IsContiguous)
             {
-                var bufA = a.Buffer; int offA = a.Offset;
-                var bufB = b.Buffer; int offB = b.Offset;
-                var bufDst = destination.Buffer; int offDst = destination.Offset;
                 int len = a.Length;
                 int vecSize = Vector<double>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (double* pB = &b.Storage.GetPinnableReference(b.Offset))
+                fixed (double* pDst = &destination.Storage.GetPinnableReference(destination.Offset))
                 {
-                    var va = new Vector<double>(bufA, offA + i);
-                    var vb = new Vector<double>(bufB, offB + i);
-                    (va + vb).CopyTo(bufDst, offDst + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufDst[offDst + i] = bufA[offA + i] + bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<double>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<double>>(pB + i);
+                        Unsafe.WriteUnaligned(pDst + i, va + vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pDst[i] = pA[i] + pB[i];
+                    }
                 }
                 return;
             }
@@ -651,27 +656,28 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Computes destination = a - b without allocating a new tensor buffer (double precision).
         /// </summary>
-        public static void Subtract(Tensor<double> a, Tensor<double> b, Tensor<double> destination)
+        public static unsafe void Subtract(Tensor<double> a, Tensor<double> b, Tensor<double> destination)
         {
             if (destination == null) throw new ArgumentNullException(nameof(destination));
             if (a.Shape == b.Shape && a.Shape == destination.Shape && a.IsContiguous && b.IsContiguous && destination.IsContiguous)
             {
-                var bufA = a.Buffer; int offA = a.Offset;
-                var bufB = b.Buffer; int offB = b.Offset;
-                var bufDst = destination.Buffer; int offDst = destination.Offset;
                 int len = a.Length;
                 int vecSize = Vector<double>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (double* pB = &b.Storage.GetPinnableReference(b.Offset))
+                fixed (double* pDst = &destination.Storage.GetPinnableReference(destination.Offset))
                 {
-                    var va = new Vector<double>(bufA, offA + i);
-                    var vb = new Vector<double>(bufB, offB + i);
-                    (va - vb).CopyTo(bufDst, offDst + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufDst[offDst + i] = bufA[offA + i] - bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<double>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<double>>(pB + i);
+                        Unsafe.WriteUnaligned(pDst + i, va - vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pDst[i] = pA[i] - pB[i];
+                    }
                 }
                 return;
             }
@@ -683,27 +689,28 @@ namespace ZeroTensor.Core
         /// <summary>
         /// Computes destination = a * b without allocating a new tensor buffer (double precision).
         /// </summary>
-        public static void Multiply(Tensor<double> a, Tensor<double> b, Tensor<double> destination)
+        public static unsafe void Multiply(Tensor<double> a, Tensor<double> b, Tensor<double> destination)
         {
             if (destination == null) throw new ArgumentNullException(nameof(destination));
             if (a.Shape == b.Shape && a.Shape == destination.Shape && a.IsContiguous && b.IsContiguous && destination.IsContiguous)
             {
-                var bufA = a.Buffer; int offA = a.Offset;
-                var bufB = b.Buffer; int offB = b.Offset;
-                var bufDst = destination.Buffer; int offDst = destination.Offset;
                 int len = a.Length;
                 int vecSize = Vector<double>.Count;
-                int i = 0;
-
-                for (; i <= len - vecSize; i += vecSize)
+                fixed (double* pA = &a.Storage.GetPinnableReference(a.Offset))
+                fixed (double* pB = &b.Storage.GetPinnableReference(b.Offset))
+                fixed (double* pDst = &destination.Storage.GetPinnableReference(destination.Offset))
                 {
-                    var va = new Vector<double>(bufA, offA + i);
-                    var vb = new Vector<double>(bufB, offB + i);
-                    (va * vb).CopyTo(bufDst, offDst + i);
-                }
-                for (; i < len; i++)
-                {
-                    bufDst[offDst + i] = bufA[offA + i] * bufB[offB + i];
+                    int i = 0;
+                    for (; i <= len - vecSize; i += vecSize)
+                    {
+                        var va = Unsafe.ReadUnaligned<Vector<double>>(pA + i);
+                        var vb = Unsafe.ReadUnaligned<Vector<double>>(pB + i);
+                        Unsafe.WriteUnaligned(pDst + i, va * vb);
+                    }
+                    for (; i < len; i++)
+                    {
+                        pDst[i] = pA[i] * pB[i];
+                    }
                 }
                 return;
             }

@@ -254,25 +254,30 @@ namespace ZeroTensor.Core
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
                 var result = new Tensor<float>(a.Shape);
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                var bufRes = result.Buffer;
                 int offA = a.Offset;
                 int offB = b.Offset;
                 int offRes = result.Offset;
                 int length = a.Length;
 
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= length - vecSize; i += vecSize)
+                unsafe
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va + vb).CopyTo(bufRes, offRes + i);
-                }
-                for (; i < length; i++)
-                {
-                    bufRes[offRes + i] = bufA[offA + i] + bufB[offB + i];
+                    fixed (float* pA = &a.Storage.GetPinnableReference(offA))
+                    fixed (float* pB = &b.Storage.GetPinnableReference(offB))
+                    fixed (float* pRes = &result.Storage.GetPinnableReference(offRes))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                            var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                            Unsafe.WriteUnaligned(pRes + i, va + vb);
+                        }
+                        for (; i < length; i++)
+                        {
+                            pRes[i] = pA[i] + pB[i];
+                        }
+                    }
                 }
 
                 return result;
@@ -286,25 +291,30 @@ namespace ZeroTensor.Core
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
                 var result = new Tensor<float>(a.Shape);
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                var bufRes = result.Buffer;
                 int offA = a.Offset;
                 int offB = b.Offset;
                 int offRes = result.Offset;
                 int length = a.Length;
 
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= length - vecSize; i += vecSize)
+                unsafe
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va - vb).CopyTo(bufRes, offRes + i);
-                }
-                for (; i < length; i++)
-                {
-                    bufRes[offRes + i] = bufA[offA + i] - bufB[offB + i];
+                    fixed (float* pA = &a.Storage.GetPinnableReference(offA))
+                    fixed (float* pB = &b.Storage.GetPinnableReference(offB))
+                    fixed (float* pRes = &result.Storage.GetPinnableReference(offRes))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                            var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                            Unsafe.WriteUnaligned(pRes + i, va - vb);
+                        }
+                        for (; i < length; i++)
+                        {
+                            pRes[i] = pA[i] - pB[i];
+                        }
+                    }
                 }
 
                 return result;
@@ -318,25 +328,30 @@ namespace ZeroTensor.Core
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
                 var result = new Tensor<float>(a.Shape);
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                var bufRes = result.Buffer;
                 int offA = a.Offset;
                 int offB = b.Offset;
                 int offRes = result.Offset;
                 int length = a.Length;
 
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= length - vecSize; i += vecSize)
+                unsafe
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va * vb).CopyTo(bufRes, offRes + i);
-                }
-                for (; i < length; i++)
-                {
-                    bufRes[offRes + i] = bufA[offA + i] * bufB[offB + i];
+                    fixed (float* pA = &a.Storage.GetPinnableReference(offA))
+                    fixed (float* pB = &b.Storage.GetPinnableReference(offB))
+                    fixed (float* pRes = &result.Storage.GetPinnableReference(offRes))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                            var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                            Unsafe.WriteUnaligned(pRes + i, va * vb);
+                        }
+                        for (; i < length; i++)
+                        {
+                            pRes[i] = pA[i] * pB[i];
+                        }
+                    }
                 }
 
                 return result;
@@ -350,25 +365,30 @@ namespace ZeroTensor.Core
             if (a.Shape == b.Shape && a.IsContiguous && b.IsContiguous)
             {
                 var result = new Tensor<float>(a.Shape);
-                var bufA = a.Buffer;
-                var bufB = b.Buffer;
-                var bufRes = result.Buffer;
                 int offA = a.Offset;
                 int offB = b.Offset;
                 int offRes = result.Offset;
                 int length = a.Length;
 
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= length - vecSize; i += vecSize)
+                unsafe
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    var vb = new Vector<float>(bufB, offB + i);
-                    (va / vb).CopyTo(bufRes, offRes + i);
-                }
-                for (; i < length; i++)
-                {
-                    bufRes[offRes + i] = bufA[offA + i] / bufB[offB + i];
+                    fixed (float* pA = &a.Storage.GetPinnableReference(offA))
+                    fixed (float* pB = &b.Storage.GetPinnableReference(offB))
+                    fixed (float* pRes = &result.Storage.GetPinnableReference(offRes))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                            var vb = Unsafe.ReadUnaligned<Vector<float>>(pB + i);
+                            Unsafe.WriteUnaligned(pRes + i, va / vb);
+                        }
+                        for (; i < length; i++)
+                        {
+                            pRes[i] = pA[i] / pB[i];
+                        }
+                    }
                 }
 
                 return result;
@@ -382,22 +402,27 @@ namespace ZeroTensor.Core
             var result = new Tensor<float>(a.Shape);
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufRes = result.Buffer;
                 int offA = a.Offset;
                 int offRes = result.Offset;
                 int length = a.Length;
 
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= length - vecSize; i += vecSize)
+                unsafe
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    (-va).CopyTo(bufRes, offRes + i);
-                }
-                for (; i < length; i++)
-                {
-                    bufRes[offRes + i] = -bufA[offA + i];
+                    fixed (float* pA = &a.Storage.GetPinnableReference(offA))
+                    fixed (float* pRes = &result.Storage.GetPinnableReference(offRes))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                            Unsafe.WriteUnaligned(pRes + i, -va);
+                        }
+                        for (; i < length; i++)
+                        {
+                            pRes[i] = -pA[i];
+                        }
+                    }
                 }
                 return result;
             }
@@ -411,23 +436,28 @@ namespace ZeroTensor.Core
             var result = new Tensor<float>(a.Shape);
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufRes = result.Buffer;
                 int offA = a.Offset;
                 int offRes = result.Offset;
                 int length = a.Length;
 
                 var vScalar = new Vector<float>(scalar);
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= length - vecSize; i += vecSize)
+                unsafe
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    (va + vScalar).CopyTo(bufRes, offRes + i);
-                }
-                for (; i < length; i++)
-                {
-                    bufRes[offRes + i] = bufA[offA + i] + scalar;
+                    fixed (float* pA = &a.Storage.GetPinnableReference(offA))
+                    fixed (float* pRes = &result.Storage.GetPinnableReference(offRes))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                            Unsafe.WriteUnaligned(pRes + i, va + vScalar);
+                        }
+                        for (; i < length; i++)
+                        {
+                            pRes[i] = pA[i] + scalar;
+                        }
+                    }
                 }
                 return result;
             }
@@ -441,23 +471,28 @@ namespace ZeroTensor.Core
             var result = new Tensor<float>(a.Shape);
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufRes = result.Buffer;
                 int offA = a.Offset;
                 int offRes = result.Offset;
                 int length = a.Length;
 
                 var vScalar = new Vector<float>(scalar);
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= length - vecSize; i += vecSize)
+                unsafe
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    (va - vScalar).CopyTo(bufRes, offRes + i);
-                }
-                for (; i < length; i++)
-                {
-                    bufRes[offRes + i] = bufA[offA + i] - scalar;
+                    fixed (float* pA = &a.Storage.GetPinnableReference(offA))
+                    fixed (float* pRes = &result.Storage.GetPinnableReference(offRes))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                            Unsafe.WriteUnaligned(pRes + i, va - vScalar);
+                        }
+                        for (; i < length; i++)
+                        {
+                            pRes[i] = pA[i] - scalar;
+                        }
+                    }
                 }
                 return result;
             }
@@ -471,23 +506,28 @@ namespace ZeroTensor.Core
             var result = new Tensor<float>(a.Shape);
             if (a.IsContiguous)
             {
-                var bufA = a.Buffer;
-                var bufRes = result.Buffer;
                 int offA = a.Offset;
                 int offRes = result.Offset;
                 int length = a.Length;
 
                 var vScalar = new Vector<float>(scalar);
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= length - vecSize; i += vecSize)
+                unsafe
                 {
-                    var va = new Vector<float>(bufA, offA + i);
-                    (va * vScalar).CopyTo(bufRes, offRes + i);
-                }
-                for (; i < length; i++)
-                {
-                    bufRes[offRes + i] = bufA[offA + i] * scalar;
+                    fixed (float* pA = &a.Storage.GetPinnableReference(offA))
+                    fixed (float* pRes = &result.Storage.GetPinnableReference(offRes))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var va = Unsafe.ReadUnaligned<Vector<float>>(pA + i);
+                            Unsafe.WriteUnaligned(pRes + i, va * vScalar);
+                        }
+                        for (; i < length; i++)
+                        {
+                            pRes[i] = pA[i] * scalar;
+                        }
+                    }
                 }
                 return result;
             }
@@ -528,23 +568,26 @@ namespace ZeroTensor.Core
             var result = new Tensor<float>(t.Shape);
             if (t.IsContiguous)
             {
-                var bufSrc = t.Buffer;
-                var bufDst = result.Buffer;
-                int offSrc = t.Offset;
-                int offDst = result.Offset;
                 int length = t.Length;
-
                 var zeroVec = Vector<float>.Zero;
                 int vecSize = Vector<float>.Count;
-                int i = 0;
-                for (; i <= length - vecSize; i += vecSize)
+
+                unsafe
                 {
-                    var v = new Vector<float>(bufSrc, offSrc + i);
-                    Vector.Max(v, zeroVec).CopyTo(bufDst, offDst + i);
-                }
-                for (; i < length; i++)
-                {
-                    bufDst[offDst + i] = Math.Max(0f, bufSrc[offSrc + i]);
+                    fixed (float* pSrc = &t.Storage.GetPinnableReference(t.Offset))
+                    fixed (float* pDst = &result.Storage.GetPinnableReference(result.Offset))
+                    {
+                        int i = 0;
+                        for (; i <= length - vecSize; i += vecSize)
+                        {
+                            var v = Unsafe.ReadUnaligned<Vector<float>>(pSrc + i);
+                            Unsafe.WriteUnaligned(pDst + i, Vector.Max(v, zeroVec));
+                        }
+                        for (; i < length; i++)
+                        {
+                            pDst[i] = Math.Max(0f, pSrc[i]);
+                        }
+                    }
                 }
                 return result;
             }
@@ -593,15 +636,11 @@ namespace ZeroTensor.Core
             var result = new Tensor<float>(t.Shape);
             if (t.IsContiguous)
             {
-                var bufSrc = t.Buffer;
-                var bufDst = result.Buffer;
-                int offSrc = t.Offset;
-                int offDst = result.Offset;
-                int length = t.Length;
-
-                for (int i = 0; i < length; i++)
+                var srcSpan = t.AsReadOnlySpan();
+                var dstSpan = result.AsSpan();
+                for (int i = 0; i < srcSpan.Length; i++)
                 {
-                    bufDst[offDst + i] = func(bufSrc[offSrc + i]);
+                    dstSpan[i] = func(srcSpan[i]);
                 }
                 return result;
             }
@@ -624,19 +663,22 @@ namespace ZeroTensor.Core
                 float sum = 0f;
                 if (t.IsContiguous)
                 {
-                    var buf = t.Buffer;
-                    int off = t.Offset;
                     int length = t.Length;
-
                     int vecSize = Vector<float>.Count;
-                    var acc = Vector<float>.Zero;
-                    int i = 0;
-                    for (; i <= length - vecSize; i += vecSize)
+                    unsafe
                     {
-                        acc += new Vector<float>(buf, off + i);
+                        fixed (float* pSrc = &t.Storage.GetPinnableReference(t.Offset))
+                        {
+                            var acc = Vector<float>.Zero;
+                            int i = 0;
+                            for (; i <= length - vecSize; i += vecSize)
+                            {
+                                acc += Unsafe.ReadUnaligned<Vector<float>>(pSrc + i);
+                            }
+                            for (int v = 0; v < vecSize; v++) sum += acc[v];
+                            for (; i < length; i++) sum += pSrc[i];
+                        }
                     }
-                    for (int v = 0; v < vecSize; v++) sum += acc[v];
-                    for (; i < length; i++) sum += buf[off + i];
                 }
                 else
                 {

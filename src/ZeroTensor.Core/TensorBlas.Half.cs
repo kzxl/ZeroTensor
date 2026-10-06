@@ -63,17 +63,16 @@ namespace ZeroTensor.Core
             int k = kA;
             var c = new Tensor<Half>(m, n);
 
-            var aBuf = a.Buffer;
-            var bBuf = b.Buffer;
-            var cBuf = c.Buffer;
+            var aContig = a.IsContiguous ? a : a.ToContiguous();
+            var bContig = b.IsContiguous ? b : b.ToContiguous();
 
-            int aStride0 = a.Strides[0], aStride1 = a.Strides[1];
-            int bStride0 = b.Strides[0], bStride1 = b.Strides[1];
+            int offA = aContig.Offset;
+            int offB = bContig.Offset;
+            int offC = c.Offset;
+
+            int aStride0 = aContig.Strides[0], aStride1 = aContig.Strides[1];
+            int bStride0 = bContig.Strides[0], bStride1 = bContig.Strides[1];
             int cStride0 = c.Strides[0], cStride1 = c.Strides[1];
-
-            int aOff = a.Offset;
-            int bOff = b.Offset;
-            int cOff = c.Offset;
 
             // Cache blocking parameters
             const int bm = 32;
@@ -82,76 +81,68 @@ namespace ZeroTensor.Core
 
             int numBlocksM = (m + bm - 1) / bm;
 
-            // Parallelize outer M block when workload is large
-            if (m * n >= 4096)
+            unsafe
             {
-                Parallel.For(0, numBlocksM, blockMIdx =>
+                fixed (Half* pA = &aContig.Storage.GetPinnableReference(offA))
+                fixed (Half* pB = &bContig.Storage.GetPinnableReference(offB))
+                fixed (Half* pC = &c.Storage.GetPinnableReference(offC))
                 {
-                    int iStart = blockMIdx * bm;
-                    int iEnd = Math.Min(iStart + bm, m);
+                    IntPtr ptrA = (IntPtr)pA;
+                    IntPtr ptrB = (IntPtr)pB;
+                    IntPtr ptrC = (IntPtr)pC;
 
-                    for (int jStart = 0; jStart < n; jStart += bn)
+                    Action<int> processMBlock = (m0) =>
                     {
-                        int jEnd = Math.Min(jStart + bn, n);
+                        Half* localA = (Half*)ptrA;
+                        Half* localB = (Half*)ptrB;
+                        Half* localC = (Half*)ptrC;
+
+                        int iEnd = Math.Min(m0 + bm, m);
 
                         for (int lStart = 0; lStart < k; lStart += bk)
                         {
                             int lEnd = Math.Min(lStart + bk, k);
 
-                            for (int i = iStart; i < iEnd; i++)
+                            for (int jStart = 0; jStart < n; jStart += bn)
                             {
-                                int aRowBase = aOff + i * aStride0;
-                                int cRowBase = cOff + i * cStride0;
+                                int jEnd = Math.Min(jStart + bn, n);
 
-                                for (int l = lStart; l < lEnd; l++)
+                                for (int i = m0; i < iEnd; i++)
                                 {
-                                    float aVal = (float)aBuf[aRowBase + l * aStride1];
-                                    int bRowBase = bOff + l * bStride0;
+                                    int aRowBase = i * aStride0;
+                                    int cRowBase = i * cStride0;
 
-                                    for (int j = jStart; j < jEnd; j++)
+                                    for (int l = lStart; l < lEnd; l++)
                                     {
-                                        int cIdx = cRowBase + j * cStride1;
-                                        float current = (float)cBuf[cIdx];
-                                        cBuf[cIdx] = (Half)(current + aVal * (float)bBuf[bRowBase + j * bStride1]);
+                                        float aVal = (float)localA[aRowBase + l * aStride1];
+                                        if (aVal == 0f) continue;
+
+                                        int bRowBase = l * bStride0;
+
+                                        for (int j = jStart; j < jEnd; j++)
+                                        {
+                                            int cIdx = cRowBase + j * cStride1;
+                                            float current = (float)localC[cIdx];
+                                            localC[cIdx] = (Half)(current + aVal * (float)localB[bRowBase + j * bStride1]);
+                                        }
                                     }
                                 }
                             }
                         }
-                    }
-                });
-            }
-            else
-            {
-                for (int iStart = 0; iStart < m; iStart += bm)
-                {
-                    int iEnd = Math.Min(iStart + bm, m);
+                    };
 
-                    for (int jStart = 0; jStart < n; jStart += bn)
+                    if (m * n >= 4096)
                     {
-                        int jEnd = Math.Min(jStart + bn, n);
-
-                        for (int lStart = 0; lStart < k; lStart += bk)
+                        Parallel.For(0, numBlocksM, blockMIdx =>
                         {
-                            int lEnd = Math.Min(lStart + bk, k);
-
-                            for (int i = iStart; i < iEnd; i++)
-                            {
-                                int aRowBase = aOff + i * aStride0;
-                                int cRowBase = cOff + i * cStride0;
-
-                                for (int l = lStart; l < lEnd; l++)
-                                {
-                                    float aVal = (float)aBuf[aRowBase + l * aStride1];
-                                    int bRowBase = bOff + l * bStride0;
-
-                                    for (int j = jStart; j < jEnd; j++)
-                                    {
-                                        int cIdx = cRowBase + j * cStride1;
-                                        float current = (float)cBuf[cIdx];
-                                        cBuf[cIdx] = (Half)(current + aVal * (float)bBuf[bRowBase + j * bStride1]);
-                                    }
-                                }
-                            }
+                            processMBlock(blockMIdx * bm);
+                        });
+                    }
+                    else
+                    {
+                        for (int m0 = 0; m0 < m; m0 += bm)
+                        {
+                            processMBlock(m0);
                         }
                     }
                 }
@@ -225,7 +216,7 @@ namespace ZeroTensor.Core
             }
 
             int[] subStrides = new int[] { t.Strides[t.Rank - 2], t.Strides[t.Rank - 1] };
-            return new Tensor<Half>(t.Buffer, baseOffset, new TensorShape(rows, cols), subStrides);
+            return new Tensor<Half>(t.Storage, baseOffset, new TensorShape(rows, cols), subStrides);
         }
 
         private static int commonBatchOffset(int[] commonCoords, int[] targetCoords, int targetRank)

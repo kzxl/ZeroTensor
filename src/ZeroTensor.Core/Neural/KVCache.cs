@@ -75,6 +75,7 @@ namespace ZeroTensor.Core.Neural
 
         /// <summary>
         /// Appends new keys and values into the cache at the current token position.
+        /// Uses ultra-fast contiguous block memory copies per head, eliminating delegate iteration overhead.
         /// </summary>
         /// <param name="newKeys">Tensor of shape [batchSize, numHeads, newSeqLen, headDim]</param>
         /// <param name="newValues">Tensor of shape [batchSize, numHeads, newSeqLen, headDim]</param>
@@ -94,14 +95,42 @@ namespace ZeroTensor.Core.Neural
                 throw new InvalidOperationException($"Cache capacity exceeded: current={_currentLength}, new={newLen}, max={_maxSeqLen}.");
             }
 
-            // Slice target window in cache along sequence axis (axis 2)
-            var keySlice = _keys.Slice(2, _currentLength, newLen);
-            var valSlice = _values.Slice(2, _currentLength, newLen);
-
-            newKeys.CopyTo(keySlice);
-            newValues.CopyTo(valSlice);
+            CopyHeadSlices(newKeys, _keys, _currentLength, newLen, _batchSize, _numHeads, _maxSeqLen, _headDim);
+            CopyHeadSlices(newValues, _values, _currentLength, newLen, _batchSize, _numHeads, _maxSeqLen, _headDim);
 
             _currentLength += newLen;
+        }
+
+        private static unsafe void CopyHeadSlices(Tensor<T> src, Tensor<T> dstCache, int startSeqPos, int newSeqLen, int batchSize, int numHeads, int maxSeqLen, int headDim)
+        {
+            var srcContig = src.IsContiguous ? src : src.ToContiguous();
+            int copyElements = newSeqLen * headDim;
+
+            int srcBatchStride = numHeads * newSeqLen * headDim;
+            int srcHeadStride = newSeqLen * headDim;
+
+            int dstBatchStride = numHeads * maxSeqLen * headDim;
+            int dstHeadStride = maxSeqLen * headDim;
+
+            fixed (T* pSrcBase = &srcContig.Storage.GetPinnableReference(srcContig.Offset))
+            fixed (T* pDstBase = &dstCache.Storage.GetPinnableReference(dstCache.Offset))
+            {
+                byte* byteSrc = (byte*)pSrcBase;
+                byte* byteDst = (byte*)pDstBase;
+                int typeSize = sizeof(T);
+                int copyBytes = copyElements * typeSize;
+
+                for (int b = 0; b < batchSize; b++)
+                {
+                    for (int h = 0; h < numHeads; h++)
+                    {
+                        int srcOffset = (b * srcBatchStride + h * srcHeadStride) * typeSize;
+                        int dstOffset = (b * dstBatchStride + h * dstHeadStride + startSeqPos * headDim) * typeSize;
+
+                        System.Runtime.CompilerServices.Unsafe.CopyBlockUnaligned(byteDst + dstOffset, byteSrc + srcOffset, (uint)copyBytes);
+                    }
+                }
+            }
         }
 
         /// <summary>

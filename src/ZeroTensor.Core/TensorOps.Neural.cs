@@ -629,12 +629,13 @@ namespace ZeroTensor.Core
 
         #endregion
 
-        #region Attention: FlashAttentionCpu (Tiled Online Softmax)
+        #region Attention: FlashAttentionCpu (Tiled Online Softmax with SIMD & GQA)
 
         /// <summary>
         /// Tiled Online Softmax Attention (FlashAttention for CPU).
         /// Computes Softmax(Q @ K.T * scale + mask) @ V without materializing the O(N^2) attention score matrix.
         /// Dramatically cuts memory footprint from O(N^2) to O(1) and maximizes L1/L2 CPU cache residency for long-context LLMs.
+        /// Fully accelerated with SIMD Vector<float> and natively supports Grouped Query Attention (GQA / MQA).
         /// </summary>
         public static Tensor<float> FlashAttentionCpu(
             Tensor<float> q,
@@ -662,6 +663,22 @@ namespace ZeroTensor.Core
 
             float scaleFactor = scale ?? (1.0f / (float)Math.Sqrt(d));
 
+            // Support Grouped Query Attention (GQA / MQA) for 4D tensors [Batch, Heads, SeqLen, Dim]
+            bool isGqa = false;
+            int gqaGroup = 1;
+            int hQ = 1;
+            int hKV = 1;
+
+            if (qRank == 4 && k.Rank == 4)
+            {
+                hQ = q.Shape[1];
+                hKV = k.Shape[1];
+                if (hQ % hKV != 0)
+                    throw new ArgumentException($"Query heads ({hQ}) must be divisible by Key/Value heads ({hKV}) for GQA.");
+                gqaGroup = hQ / hKV;
+                isGqa = gqaGroup > 1;
+            }
+
             // Compute total batch count (heads * batch elements)
             int batchCount = 1;
             for (int i = 0; i < qRank - 2; i++) batchCount *= q.Shape[i];
@@ -682,6 +699,8 @@ namespace ZeroTensor.Core
             int vBatchStride = sK * dV;
             int outBatchStride = sQ * dV;
             int maskBatchStride = sQ * sK;
+
+            int vecSize = Vector<float>.Count;
 
             unsafe
             {
@@ -706,9 +725,18 @@ namespace ZeroTensor.Core
                             float* localOut = (float*)ptrOut;
                             float* localMask = (float*)ptrMask;
 
+                            int bKV = b;
+                            if (isGqa)
+                            {
+                                int bSeq = b / hQ;
+                                int curHQ = b % hQ;
+                                int curHKV = curHQ / gqaGroup;
+                                bKV = bSeq * hKV + curHKV;
+                            }
+
                             int qBatchOff = b * qBatchStride;
-                            int kBatchOff = b * kBatchStride;
-                            int vBatchOff = b * vBatchStride;
+                            int kBatchOff = bKV * kBatchStride;
+                            int vBatchOff = bKV * vBatchStride;
                             int outBatchOff = b * outBatchStride;
                             int maskBatchOff = b * maskBatchStride;
 
@@ -720,58 +748,111 @@ namespace ZeroTensor.Core
                                 acc = heapAcc.AsSpan();
                             }
 
-                            for (int i = 0; i < sQ; i++)
+                            fixed (float* pAcc = acc)
                             {
-                                int qOff = qBatchOff + i * d;
-                                int outOff = outBatchOff + i * dV;
-                                int maskRowOff = localMask != null ? maskBatchOff + i * sK : 0;
-
-                                float maxScore = float.NegativeInfinity;
-                                float sumExp = 0f;
-                                acc.Clear();
-
-                                for (int j = 0; j < sK; j++)
+                                for (int i = 0; i < sQ; i++)
                                 {
-                                    int kOff = kBatchOff + j * d;
-                                    int vOff = vBatchOff + j * dV;
+                                    int qOff = qBatchOff + i * d;
+                                    int outOff = outBatchOff + i * dV;
+                                    int maskRowOff = localMask != null ? (maskBatchStride > 0 ? (b % (maskContig!.Length / maskBatchStride)) * maskBatchStride + i * sK : 0) : 0;
 
-                                    float dot = 0f;
-                                    for (int c = 0; c < d; c++)
-                                    {
-                                        dot += localQ[qOff + c] * localK[kOff + c];
-                                    }
+                                    float maxScore = float.NegativeInfinity;
+                                    float sumExp = 0f;
+                                    acc.Clear();
 
-                                    float score = dot * scaleFactor;
-                                    if (localMask != null)
+                                    for (int j = 0; j < sK; j++)
                                     {
-                                        score += localMask[maskRowOff + j];
-                                    }
+                                        int kOff = kBatchOff + j * d;
+                                        int vOff = vBatchOff + j * dV;
 
-                                    if (score > maxScore)
-                                    {
-                                        float alpha = (float)Math.Exp(maxScore - score);
-                                        sumExp = sumExp * alpha + 1f;
-                                        for (int c = 0; c < dV; c++)
+                                        // 1. SIMD-accelerated Dot Product: Q[i] . K[j]
+                                        float dot = 0f;
+                                        int c = 0;
+                                        if (Vector.IsHardwareAccelerated && d >= vecSize)
                                         {
-                                            acc[c] = acc[c] * alpha + localV[vOff + c];
+                                            var vDot = Vector<float>.Zero;
+                                            for (; c <= d - vecSize; c += vecSize)
+                                            {
+                                                var vQ = Unsafe.ReadUnaligned<Vector<float>>(localQ + qOff + c);
+                                                var vK = Unsafe.ReadUnaligned<Vector<float>>(localK + kOff + c);
+                                                vDot += vQ * vK;
+                                            }
+                                            for (int kIdx = 0; kIdx < vecSize; kIdx++) dot += vDot[kIdx];
                                         }
-                                        maxScore = score;
-                                    }
-                                    else
-                                    {
-                                        float p = (float)Math.Exp(score - maxScore);
-                                        sumExp += p;
-                                        for (int c = 0; c < dV; c++)
+                                        for (; c < d; c++)
                                         {
-                                            acc[c] += p * localV[vOff + c];
+                                            dot += localQ[qOff + c] * localK[kOff + c];
+                                        }
+
+                                        float score = dot * scaleFactor;
+                                        if (localMask != null)
+                                        {
+                                            score += localMask[maskRowOff + j];
+                                        }
+
+                                        // 2. Online Softmax & Value accumulation with SIMD Vector update
+                                        if (score > maxScore)
+                                        {
+                                            float alpha = (float)Math.Exp(maxScore - score);
+                                            sumExp = sumExp * alpha + 1f;
+
+                                            var vAlpha = new Vector<float>(alpha);
+                                            int cv = 0;
+                                            if (Vector.IsHardwareAccelerated && dV >= vecSize)
+                                            {
+                                                for (; cv <= dV - vecSize; cv += vecSize)
+                                                {
+                                                    var vA = Unsafe.ReadUnaligned<Vector<float>>(pAcc + cv);
+                                                    var vVal = Unsafe.ReadUnaligned<Vector<float>>(localV + vOff + cv);
+                                                    Unsafe.WriteUnaligned(pAcc + cv, vA * vAlpha + vVal);
+                                                }
+                                            }
+                                            for (; cv < dV; cv++)
+                                            {
+                                                pAcc[cv] = pAcc[cv] * alpha + localV[vOff + cv];
+                                            }
+
+                                            maxScore = score;
+                                        }
+                                        else
+                                        {
+                                            float p = (float)Math.Exp(score - maxScore);
+                                            sumExp += p;
+
+                                            var vP = new Vector<float>(p);
+                                            int cv = 0;
+                                            if (Vector.IsHardwareAccelerated && dV >= vecSize)
+                                            {
+                                                for (; cv <= dV - vecSize; cv += vecSize)
+                                                {
+                                                    var vA = Unsafe.ReadUnaligned<Vector<float>>(pAcc + cv);
+                                                    var vVal = Unsafe.ReadUnaligned<Vector<float>>(localV + vOff + cv);
+                                                    Unsafe.WriteUnaligned(pAcc + cv, vA + vP * vVal);
+                                                }
+                                            }
+                                            for (; cv < dV; cv++)
+                                            {
+                                                pAcc[cv] += p * localV[vOff + cv];
+                                            }
                                         }
                                     }
-                                }
 
-                                float invSum = sumExp > 0f ? 1.0f / sumExp : 0f;
-                                for (int c = 0; c < dV; c++)
-                                {
-                                    localOut[outOff + c] = acc[c] * invSum;
+                                    // 3. Normalize output with invSum via SIMD
+                                    float invSum = sumExp > 0f ? 1.0f / sumExp : 0f;
+                                    var vInv = new Vector<float>(invSum);
+                                    int cOut = 0;
+                                    if (Vector.IsHardwareAccelerated && dV >= vecSize)
+                                    {
+                                        for (; cOut <= dV - vecSize; cOut += vecSize)
+                                        {
+                                            var vA = Unsafe.ReadUnaligned<Vector<float>>(pAcc + cOut);
+                                            Unsafe.WriteUnaligned(localOut + outOff + cOut, vA * vInv);
+                                        }
+                                    }
+                                    for (; cOut < dV; cOut++)
+                                    {
+                                        localOut[outOff + cOut] = pAcc[cOut] * invSum;
+                                    }
                                 }
                             }
                         });
@@ -847,12 +928,11 @@ namespace ZeroTensor.Core
         }
 
         /// <summary>
-        /// Applies Rotary Positional Embedding (RoPE) to Query or Key tensors.
-        /// Supports standard LLaMA/Mistral/Qwen/DiT split-half layout or interleaved layout.
-        /// x shape: [..., SeqLen, HeadDim].
+        /// Applies Rotary Positional Embedding (RoPE) in-place to Query or Key tensors directly without memory allocations.
+        /// Precomputes sinusoidal rotary angles once across all heads for maximum decoding speed.
         /// </summary>
-        public static Tensor<float> ApplyRoPE(
-            Tensor<float> x,
+        public static void ApplyRoPEInPlace(
+            this Tensor<float> x,
             int startPos = 0,
             float thetaBase = 10000.0f,
             bool interleaved = false)
@@ -864,75 +944,125 @@ namespace ZeroTensor.Core
             int seqLen = x.Shape[x.Rank - 2];
 
             if ((headDim & 1) != 0)
-            {
                 throw new ArgumentException($"Head dimension ({headDim}) must be an even number for RoPE.", nameof(x));
-            }
 
-            var contigX = x.IsContiguous ? x : x.ToContiguous();
-            var result = new Tensor<float>(contigX.Shape);
+            if (!x.IsContiguous)
+                throw new InvalidOperationException("In-place RoPE currently requires contiguous tensor memory.");
 
-            int totalHeads = contigX.Length / (seqLen * headDim);
+            int totalHeads = x.Length / (seqLen * headDim);
             int halfDim = headDim / 2;
+            int totalTableElems = seqLen * halfDim;
 
-            // Precompute inverse frequencies for halfDim
-            float[] invFreq = new float[halfDim];
-            for (int i = 0; i < halfDim; i++)
+            // Precompute cos & sin table across all sequence positions ONCE for all heads
+            Span<float> cosTable = stackalloc float[Math.Min(totalTableElems, 2048)];
+            Span<float> sinTable = stackalloc float[Math.Min(totalTableElems, 2048)];
+            float[]? heapCos = null;
+            float[]? heapSin = null;
+
+            if (totalTableElems > 2048)
             {
-                invFreq[i] = 1.0f / (float)Math.Pow(thetaBase, (2.0 * i) / headDim);
+                heapCos = System.Buffers.ArrayPool<float>.Shared.Rent(totalTableElems);
+                heapSin = System.Buffers.ArrayPool<float>.Shared.Rent(totalTableElems);
+                cosTable = heapCos.AsSpan(0, totalTableElems);
+                sinTable = heapSin.AsSpan(0, totalTableElems);
             }
 
-            Parallel.For(0, totalHeads, h =>
+            try
             {
-                int headBaseOffset = contigX.Offset + h * seqLen * headDim;
-                int headDstBaseOffset = result.Offset + h * seqLen * headDim;
-
+                // Precompute table
                 for (int s = 0; s < seqLen; s++)
                 {
                     int pos = startPos + s;
-                    int tokenSrcOffset = headBaseOffset + s * headDim;
-                    int tokenDstOffset = headDstBaseOffset + s * headDim;
-
-                    ref float pSrc = ref contigX.Storage.GetPinnableReference(tokenSrcOffset);
-                    ref float pDst = ref result.Storage.GetPinnableReference(tokenDstOffset);
-
-                    if (!interleaved)
+                    int sOffset = s * halfDim;
+                    for (int i = 0; i < halfDim; i++)
                     {
-                        // Standard LLaMA / HuggingFace: split halves
-                        for (int i = 0; i < halfDim; i++)
-                        {
-                            float angle = pos * invFreq[i];
-                            float cos = (float)Math.Cos(angle);
-                            float sin = (float)Math.Sin(angle);
-
-                            float x1 = Unsafe.Add(ref pSrc, i);
-                            float x2 = Unsafe.Add(ref pSrc, i + halfDim);
-
-                            Unsafe.Add(ref pDst, i) = x1 * cos - x2 * sin;
-                            Unsafe.Add(ref pDst, i + halfDim) = x2 * cos + x1 * sin;
-                        }
-                    }
-                    else
-                    {
-                        // Interleaved GPT-NeoX layout
-                        for (int i = 0; i < halfDim; i++)
-                        {
-                            float angle = pos * invFreq[i];
-                            float cos = (float)Math.Cos(angle);
-                            float sin = (float)Math.Sin(angle);
-
-                            int idx1 = 2 * i;
-                            int idx2 = 2 * i + 1;
-
-                            float x1 = Unsafe.Add(ref pSrc, idx1);
-                            float x2 = Unsafe.Add(ref pSrc, idx2);
-
-                            Unsafe.Add(ref pDst, idx1) = x1 * cos - x2 * sin;
-                            Unsafe.Add(ref pDst, idx2) = x2 * cos + x1 * sin;
-                        }
+                        float invFreq = 1.0f / (float)Math.Pow(thetaBase, (2.0 * i) / headDim);
+                        float angle = pos * invFreq;
+                        cosTable[sOffset + i] = (float)Math.Cos(angle);
+                        sinTable[sOffset + i] = (float)Math.Sin(angle);
                     }
                 }
-            });
 
+                unsafe
+                {
+                    fixed (float* pX = &x.Storage.GetPinnableReference(x.Offset))
+                    fixed (float* pCos = cosTable)
+                    fixed (float* pSin = sinTable)
+                    {
+                        IntPtr ptrX = (IntPtr)pX;
+                        IntPtr ptrCos = (IntPtr)pCos;
+                        IntPtr ptrSin = (IntPtr)pSin;
+
+                        Parallel.For(0, totalHeads, h =>
+                        {
+                            float* localX = (float*)ptrX;
+                            float* localCos = (float*)ptrCos;
+                            float* localSin = (float*)ptrSin;
+
+                            int headBaseOffset = h * seqLen * headDim;
+
+                            for (int s = 0; s < seqLen; s++)
+                            {
+                                int tokenOffset = headBaseOffset + s * headDim;
+                                int sOffset = s * halfDim;
+
+                                if (!interleaved)
+                                {
+                                    for (int i = 0; i < halfDim; i++)
+                                    {
+                                        float cos = localCos[sOffset + i];
+                                        float sin = localSin[sOffset + i];
+
+                                        float x1 = localX[tokenOffset + i];
+                                        float x2 = localX[tokenOffset + i + halfDim];
+
+                                        localX[tokenOffset + i] = x1 * cos - x2 * sin;
+                                        localX[tokenOffset + i + halfDim] = x2 * cos + x1 * sin;
+                                    }
+                                }
+                                else
+                                {
+                                    for (int i = 0; i < halfDim; i++)
+                                    {
+                                        float cos = localCos[sOffset + i];
+                                        float sin = localSin[sOffset + i];
+
+                                        int idx1 = 2 * i;
+                                        int idx2 = 2 * i + 1;
+
+                                        float x1 = localX[tokenOffset + idx1];
+                                        float x2 = localX[tokenOffset + idx2];
+
+                                        localX[tokenOffset + idx1] = x1 * cos - x2 * sin;
+                                        localX[tokenOffset + idx2] = x2 * cos + x1 * sin;
+                                    }
+                                }
+                            }
+                        });
+                    }
+                }
+            }
+            finally
+            {
+                if (heapCos != null) System.Buffers.ArrayPool<float>.Shared.Return(heapCos);
+                if (heapSin != null) System.Buffers.ArrayPool<float>.Shared.Return(heapSin);
+            }
+        }
+
+        /// <summary>
+        /// Applies Rotary Positional Embedding (RoPE) to Query or Key tensors.
+        /// Supports standard LLaMA/Mistral/Qwen/DiT split-half layout or interleaved layout.
+        /// x shape: [..., SeqLen, HeadDim].
+        /// </summary>
+        public static Tensor<float> ApplyRoPE(
+            Tensor<float> x,
+            int startPos = 0,
+            float thetaBase = 10000.0f,
+            bool interleaved = false)
+        {
+            if (x == null) throw new ArgumentNullException(nameof(x));
+            var result = x.Clone();
+            ApplyRoPEInPlace(result, startPos, thetaBase, interleaved);
             return result;
         }
 
@@ -995,11 +1125,15 @@ namespace ZeroTensor.Core
             int spatialOut = outH * outW;
             var weightMatrix = weight.Reshape(outChannels, kernelSize);
 
+            int batchElements = outChannels * spatialOut;
+            int vecSize = Vector<float>.Count;
+
             // Process each batch image independently
             Parallel.For(0, batchSize, b =>
             {
-                // 1. im2col: transform input image [C_in, inH, inW] into colMatrix [kernelSize, spatialOut]
-                var colMatrix = new Tensor<float>(kernelSize, spatialOut);
+                // 1. im2col: rent memory from TensorPool to avoid massive GC heap allocations
+                using var rentedCol = TensorPool.Rent<float>(kernelSize, spatialOut);
+                var colMatrix = rentedCol.Tensor;
                 ref float pCol = ref colMatrix.Storage.GetPinnableReference(colMatrix.Offset);
 
                 for (int c = 0; c < inChannels; c++)
@@ -1033,21 +1167,38 @@ namespace ZeroTensor.Core
                     }
                 }
 
-                // 2. GEMM: [outChannels, kernelSize] @ [kernelSize, spatialOut] -> [outChannels, spatialOut]
-                var out2D = TensorBlas.MatMul2D(weightMatrix, colMatrix);
-                ref float pOut2D = ref out2D.Storage.GetPinnableReference(out2D.Offset);
+                // 2. Direct Zero-Allocation GEMM into output buffer: [outChannels, kernelSize] @ [kernelSize, spatialOut] -> output[b, ...]
+                int batchOffset = output.Offset + b * batchElements;
+                var out2DSlice = new Tensor<float>(output.Storage, batchOffset, new TensorShape(outChannels, spatialOut), new[] { spatialOut, 1 });
+                TensorBlas.Gemm(weightMatrix, colMatrix, out2DSlice, 1.0f, 0.0f);
 
-                // 3. Copy into output tensor and add bias if present
-                for (int oc = 0; oc < outChannels; oc++)
+                // 3. Vectorized Bias Addition if present
+                if (bias != null)
                 {
-                    float bVal = bias != null ? bias[oc] : 0f;
-                    int srcOffset = oc * spatialOut;
+                    ref float pBias = ref bias.Storage.GetPinnableReference(bias.Offset);
+                    ref float pOut = ref output.Storage.GetPinnableReference(batchOffset);
 
-                    for (int oh = 0; oh < outH; oh++)
+                    for (int oc = 0; oc < outChannels; oc++)
                     {
-                        for (int ow = 0; ow < outW; ow++)
+                        float bVal = Unsafe.Add(ref pBias, oc);
+                        if (bVal == 0f) continue;
+
+                        int rowOff = oc * spatialOut;
+                        var vBias = new Vector<float>(bVal);
+                        int p = 0;
+
+                        if (Vector.IsHardwareAccelerated && spatialOut >= vecSize)
                         {
-                            output[b, oc, oh, ow] = Unsafe.Add(ref pOut2D, srcOffset + oh * outW + ow) + bVal;
+                            for (; p <= spatialOut - vecSize; p += vecSize)
+                            {
+                                var v = ReadVector(ref pOut, rowOff + p);
+                                WriteVector(ref pOut, rowOff + p, v + vBias);
+                            }
+                        }
+
+                        for (; p < spatialOut; p++)
+                        {
+                            Unsafe.Add(ref pOut, rowOff + p) += bVal;
                         }
                     }
                 }
@@ -1778,5 +1929,15 @@ namespace ZeroTensor.Core
         /// </summary>
         public static Tensor<float> GeGLU(Tensor<float> x, int dim = -1) =>
             TensorOps.GeGLU(x, dim);
+
+        /// <summary>
+        /// Applies Rotary Positional Embedding (RoPE) in-place directly on the tensor.
+        /// </summary>
+        public static void ApplyRoPEInPlace(
+            Tensor<float> x,
+            int startPos = 0,
+            float thetaBase = 10000.0f,
+            bool interleaved = false) =>
+            TensorOps.ApplyRoPEInPlace(x, startPos, thetaBase, interleaved);
     }
 }

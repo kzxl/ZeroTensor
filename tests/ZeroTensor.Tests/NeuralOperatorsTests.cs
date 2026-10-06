@@ -655,5 +655,210 @@ namespace ZeroTensor.Tests
             Assert.Equal(43f, c[1, 0]); // 3*5 + 4*7 = 43
             Assert.Equal(50f, c[1, 1]); // 3*6 + 4*8 = 50
         }
+
+        [Fact]
+        public void FlashAttentionCpu_GroupedQueryAttention_MatchesExpanded()
+        {
+            // Batch = 1, Q Heads = 4, KV Heads = 2 (GQA with group_size = 2), Seq = 8, Dim = 16
+            int b = 1, hq = 4, hkv = 2, seq = 8, dim = 16;
+            var q = Tensor.Zeros<float>(b, hq, seq, dim);
+            var k = Tensor.Zeros<float>(b, hkv, seq, dim);
+            var v = Tensor.Zeros<float>(b, hkv, seq, dim);
+
+            for (int h = 0; h < hq; h++)
+            {
+                for (int s = 0; s < seq; s++)
+                {
+                    for (int d = 0; d < dim; d++)
+                    {
+                        q[0, h, s, d] = (float)Math.Sin(h * 10 + s + d * 0.1);
+                    }
+                }
+            }
+
+            for (int h = 0; h < hkv; h++)
+            {
+                for (int s = 0; s < seq; s++)
+                {
+                    for (int d = 0; d < dim; d++)
+                    {
+                        k[0, h, s, d] = (float)Math.Cos(h * 5 + s * 0.5 + d * 0.2);
+                        v[0, h, s, d] = (float)Math.Sin(h * 3 + s * 0.2 + d * 0.3);
+                    }
+                }
+            }
+
+            // Reference: Expand K and V to 4 heads manually
+            var kExp = Tensor.Zeros<float>(b, hq, seq, dim);
+            var vExp = Tensor.Zeros<float>(b, hq, seq, dim);
+            for (int h = 0; h < hq; h++)
+            {
+                int kvH = h / (hq / hkv); // 0, 1 -> 0; 2, 3 -> 1
+                for (int s = 0; s < seq; s++)
+                {
+                    for (int d = 0; d < dim; d++)
+                    {
+                        kExp[0, h, s, d] = k[0, kvH, s, d];
+                        vExp[0, h, s, d] = v[0, kvH, s, d];
+                    }
+                }
+            }
+
+            var expected = TensorOps.ScaledDotProductAttention(q, kExp, vExp);
+            var actual = TensorOps.FlashAttentionCpu(q, k, v);
+
+            Assert.Equal(expected.Shape.Dimensions, actual.Shape.Dimensions);
+
+            for (int h = 0; h < hq; h++)
+            {
+                for (int s = 0; s < seq; s++)
+                {
+                    for (int d = 0; d < dim; d++)
+                    {
+                        float diff = Math.Abs(expected[0, h, s, d] - actual[0, h, s, d]);
+                        Assert.True(diff < 1e-4f, $"GQA Mismatch at h={h}, s={s}, d={d}: expected {expected[0, h, s, d]}, actual {actual[0, h, s, d]}");
+                    }
+                }
+            }
+        }
+
+        [Fact]
+        public void ApplyRoPEInPlace_MatchesRotaryEmbedding()
+        {
+            // Batch = 1, Heads = 2, Seq = 4, Dim = 8
+            var xDefault = Tensor.Zeros<float>(1, 2, 4, 8);
+            var xInterleaved = Tensor.Zeros<float>(1, 2, 4, 8);
+            for (int h = 0; h < 2; h++)
+            {
+                for (int s = 0; s < 4; s++)
+                {
+                    for (int d = 0; d < 8; d++)
+                    {
+                        float val = (h + 1) * 10f + (s + 1) + (d + 1) * 0.1f;
+                        xDefault[0, h, s, d] = val;
+                        xInterleaved[0, h, s, d] = val;
+                    }
+                }
+            }
+
+            var xCopy = xDefault.Clone();
+
+            // 1. Run in-place RoPE split-half (default: Llama style)
+            xDefault.ApplyRoPEInPlace(startPos: 5, thetaBase: 10000.0f, interleaved: false);
+
+            int pos = 7; // token s = 2, startPos = 5
+            int halfDim = 4;
+            for (int h = 0; h < 2; h++)
+            {
+                for (int i = 0; i < halfDim; i++)
+                {
+                    double theta = 1.0 / Math.Pow(10000.0, (2.0 * i) / 8.0);
+                    double angle = pos * theta;
+                    float cos = (float)Math.Cos(angle);
+                    float sin = (float)Math.Sin(angle);
+
+                    float x1 = xCopy[0, h, 2, i];
+                    float x2 = xCopy[0, h, 2, i + halfDim];
+
+                    float exp1 = x1 * cos - x2 * sin;
+                    float exp2 = x2 * cos + x1 * sin;
+
+                    Assert.True(Math.Abs(xDefault[0, h, 2, i] - exp1) < 1e-4f);
+                    Assert.True(Math.Abs(xDefault[0, h, 2, i + halfDim] - exp2) < 1e-4f);
+                }
+            }
+
+            // 2. Run in-place RoPE interleaved (GPT-J / NeoX style)
+            xInterleaved.ApplyRoPEInPlace(startPos: 5, thetaBase: 10000.0f, interleaved: true);
+            for (int h = 0; h < 2; h++)
+            {
+                for (int i = 0; i < halfDim; i++)
+                {
+                    double theta = 1.0 / Math.Pow(10000.0, (2.0 * i) / 8.0);
+                    double angle = pos * theta;
+                    float cos = (float)Math.Cos(angle);
+                    float sin = (float)Math.Sin(angle);
+
+                    float x1 = xCopy[0, h, 2, 2 * i];
+                    float x2 = xCopy[0, h, 2, 2 * i + 1];
+
+                    float exp1 = x1 * cos - x2 * sin;
+                    float exp2 = x2 * cos + x1 * sin;
+
+                    Assert.True(Math.Abs(xInterleaved[0, h, 2, 2 * i] - exp1) < 1e-4f);
+                    Assert.True(Math.Abs(xInterleaved[0, h, 2, 2 * i + 1] - exp2) < 1e-4f);
+                }
+            }
+        }
+
+        [Fact]
+        public void KVCache_ContiguousBlockAppend_Correctness()
+        {
+            using var kv = new ZeroTensor.Core.Neural.KVCache<float>(batchSize: 1, numHeads: 2, maxSeqLength: 16, headDim: 4);
+
+            var k1 = Tensor.Ones(1, 2, 3, 4);
+            var v1 = Tensor.Zeros<float>(1, 2, 3, 4);
+            v1.Fill(2f);
+
+            kv.Append(k1, v1);
+            Assert.Equal(3, kv.CurrentLength);
+
+            var kView = kv.GetValidKeys();
+            var vView = kv.GetValidValues();
+
+            Assert.Equal(new[] { 1, 2, 3, 4 }, kView.Shape.Dimensions);
+            Assert.Equal(1f, kView[0, 0, 0, 0]);
+            Assert.Equal(2f, vView[0, 1, 2, 3]);
+
+            // Append 2 more tokens
+            var k2 = Tensor.Zeros<float>(1, 2, 2, 4);
+            k2.Fill(5f);
+            var v2 = Tensor.Zeros<float>(1, 2, 2, 4);
+            v2.Fill(6f);
+
+            kv.Append(k2, v2);
+            Assert.Equal(5, kv.CurrentLength);
+
+            var kView2 = kv.GetValidKeys();
+            Assert.Equal(new[] { 1, 2, 5, 4 }, kView2.Shape.Dimensions);
+            Assert.Equal(1f, kView2[0, 0, 2, 0]); // From first append
+            Assert.Equal(5f, kView2[0, 0, 3, 0]); // From second append
+            Assert.Equal(5f, kView2[0, 1, 4, 3]);
+        }
+
+        [Fact]
+        public void InPlaceOps_OnNativeMemoryBlock()
+        {
+            using var blockA = ZeroPrimitives.Memory.NativeMemoryBlock.Allocate(8 * sizeof(float));
+            using var blockB = ZeroPrimitives.Memory.NativeMemoryBlock.Allocate(8 * sizeof(float));
+
+            var a = Tensor.FromNativeBlock<float>(blockA, 8);
+            var b = Tensor.FromNativeBlock<float>(blockB, 8);
+
+            for (int i = 0; i < 8; i++)
+            {
+                a[i] = i * 2f;
+                b[i] = 1f;
+            }
+
+            // In-place Add_
+            a.Add_(b);
+            for (int i = 0; i < 8; i++)
+            {
+                Assert.Equal(i * 2f + 1f, a[i]);
+            }
+
+            // In-place MultiplyScalar_
+            a.MultiplyScalar_(2f);
+            for (int i = 0; i < 8; i++)
+            {
+                Assert.Equal((i * 2f + 1f) * 2f, a[i]);
+            }
+
+            // In-place Relu_
+            a[0] = -10f;
+            a.Relu_();
+            Assert.Equal(0f, a[0]);
+        }
     }
 }
